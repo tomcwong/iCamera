@@ -1,0 +1,88 @@
+name: icamera
+description: "iCamera — Professional Leica-inspired camera app with color science, lens simulation, and bokeh."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # --- Camera ---
+  camera: ^0.11.0+2
+  # CameraX backend for Android (Camera2 API with RAW/DNG support)
+  camera_android_camerax: ^0.6.6+1
+
+  # --- State management ---
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+
+  # --- Image processing (Dart-side) ---
+  image: ^4.2.0
+
+  # --- Native FFI bridge ---
+  ffi: ^2.1.3
+  plugin_platform_interface: ^2.1.8
+
+  # --- TFLite (depth estimation + segmentation) ---
+  tflite_flutter: ^0.10.4
+
+  # --- ML Kit selfie segmentation ---
+  google_mlkit_selfie_segmentation: ^0.10.1
+
+  # --- File system & permissions ---
+  path_provider: ^2.1.4
+  permission_handler: ^11.3.1
+  path: ^1.9.0
+
+  # --- Gallery / photo picker ---
+  photo_manager: ^3.6.3
+
+  # --- UI utilities ---
+  google_fonts: ^6.2.1
+  flutter_svg: ^2.0.10+1
+  cached_network_image: ^3.4.1
+
+  # --- Haptic feedback ---
+  flutter_haptic_feedback: ^1.0.0
+
+  # --- Device info ---
+  device_info_plus: ^11.2.0
+
+  # --- Shared preferences / settings ---
+  shared_preferences: ^2.3.3
+
+  # --- Logging ---
+  logger: ^2.4.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  riverpod_generator: ^2.6.1
+  build_runner: ^2.4.13
+  json_serializable: ^6.8.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    # 3D LUT color profiles (Leica Looks)
+    - assets/luts/leica_classic.cube
+    - assets/luts/leica_contemporary.cube
+    - assets/luts/leica_bw.cube
+    - assets/luts/leica_vivid.cube
+    - assets/luts/leica_artist.cube
+    # Lens vignetting masks (PNG overlays per lens)
+    - assets/lens_profiles/noctilux_50_vignette.png
+    - assets/lens_profiles/summilux_28_vignette.png
+    - assets/lens_profiles/summilux_35_vignette.png
+    # TFLite models
+    - assets/models/selfie_segmentation.tflite
+    - assets/models/depth_estimation.tflite
+    # App icons / UI assets (directory entry ignored if empty — add files before uncommenting)
+    # - assets/icons/
+    # fonts: add font files to assets/fonts/ then declare them here

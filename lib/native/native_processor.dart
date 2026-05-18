@@ -1,0 +1,178 @@
+import 'dart:ffi';
+import 'dart:typed_data';
+import 'package:ffi/ffi.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'native_bridge.dart';
+import 'lut_cache.dart';
+import '../features/camera/models/capture_settings.dart';
+import '../features/lens_simulation/lens_profile.dart';
+
+final nativeProcessorProvider = Provider<NativeProcessor>((ref) {
+  final p = NativeProcessor._();
+  ref.onDispose(p.dispose);
+  return p;
+});
+
+/// High-level Dart wrapper around the native C++ image processing pipeline.
+///
+/// Manages two reusable native pixel buffers (ping-pong) and a float mask
+/// buffer. Buffers grow to fit the largest frame seen and are never shrunk —
+/// this eliminates repeated calloc/free during real-time capture.
+///
+/// Operations that require src → dst (CA, distortion, bokeh) alternate the
+/// active buffer so the result always lives in [_buf0] or [_buf1] without
+/// any extra copies. [_active] tracks which buffer is current.
+class NativeProcessor {
+  NativeProcessor._();
+
+  final NativeBridge _b = NativeBridge.instance;
+  final LutCache _luts = LutCache.instance;
+
+  bool get isAvailable => _b.isLoaded;
+
+  // ── Reusable native memory ───────────────────────────────────────────────
+
+  Pointer<Uint8> _buf0 = nullptr;
+  Pointer<Uint8> _buf1 = nullptr;
+  Pointer<Float> _maskBuf = nullptr;
+  int _bufBytes = 0;
+  int _maskCount = 0;
+  int _active = 0; // 0 → _buf0 is current, 1 → _buf1 is current
+
+  Pointer<Uint8> get _src => _active == 0 ? _buf0 : _buf1;
+  Pointer<Uint8> get _dst => _active == 0 ? _buf1 : _buf0;
+
+  void _flip() => _active = 1 - _active;
+
+  void _ensurePixelBufs(int bytes) {
+    if (bytes <= _bufBytes) return;
+    if (_buf0 != nullptr) calloc.free(_buf0);
+    if (_buf1 != nullptr) calloc.free(_buf1);
+    _buf0 = calloc<Uint8>(bytes);
+    _buf1 = calloc<Uint8>(bytes);
+    _bufBytes = bytes;
+    _active = 0;
+  }
+
+  void _ensureMaskBuf(int count) {
+    if (count <= _maskCount) return;
+    if (_maskBuf != nullptr) calloc.free(_maskBuf);
+    _maskBuf = calloc<Float>(count);
+    _maskCount = count;
+  }
+
+  // ── Main pipeline entry point ────────────────────────────────────────────
+
+  /// Runs the full native pipeline on [rgba] RGBA bytes and returns the
+  /// processed result. Falls back gracefully if native is unavailable.
+  Future<Uint8List> process({
+    required Uint8List rgba,
+    required int width,
+    required int height,
+    required CaptureSettings settings,
+    Float32List? segmentationMask,
+  }) async {
+    if (!isAvailable) return rgba;
+
+    final pixels = width * height;
+    final bytes = pixels * 4;
+
+    _ensurePixelBufs(bytes);
+    _active = 0; // always start from _buf0
+
+    // Copy Dart bytes → native src buffer
+    _src.asTypedList(bytes).setAll(0, rgba);
+
+    // 1. Colour look (3D LUT) ────────────────────────────────────────────────
+    final lutPtr = await _luts.get(settings.selectedLook);
+    if (lutPtr != null) {
+      _b.apply3dLut(_src, pixels, lutPtr, 33);
+    }
+
+    // 2. Exposure compensation ───────────────────────────────────────────────
+    if (settings.exposureCompensation != 0.0) {
+      _b.applyExposure(_src, pixels, settings.exposureCompensation);
+    }
+
+    // 3. White balance — applied in all modes whenever user has moved off neutral
+    if (settings.whiteBalanceKelvin != 5500) {
+      _applyKelvin(settings.whiteBalanceKelvin, pixels);
+    }
+
+    // 4. Tone curve (film-like contrast + highlight rolloff) ──────────────────
+    _b.applyToneCurve(_src, pixels, 0.16, 0.88);
+
+    // 5. Lens vignetting ─────────────────────────────────────────────────────
+    final vStr = _vignetteStrength(settings.selectedLens, settings.aperture);
+    _b.applyVignette(_src, width, height, vStr);
+
+    // 6. Chromatic aberration (not in AUTO mode) ──────────────────────────────
+    if (settings.mode != CaptureMode.auto) {
+      final fringe = _caFringe(settings.selectedLens, settings.aperture);
+      if (fringe > 0.5) {
+        _b.applyCa(_src, _dst, width, height, fringe);
+        _flip();
+      }
+    }
+
+    // 7. Barrel distortion ───────────────────────────────────────────────────
+    if (settings.mode != CaptureMode.auto) {
+      final k1 = settings.selectedLens.distortionK1;
+      if (k1.abs() > 0.001) {
+        _b.applyDistortion(_src, _dst, width, height, k1);
+        _flip();
+      }
+    }
+
+    // 8. Bokeh / depth-of-field blur ─────────────────────────────────────────
+    if (settings.bokehEnabled &&
+        settings.mode == CaptureMode.aperture &&
+        segmentationMask != null) {
+      _ensureMaskBuf(pixels);
+      _maskBuf.asTypedList(pixels).setAll(0, segmentationMask);
+      final radius = _bokehRadius(settings.aperture, settings.selectedLens.maxAperture);
+      if (radius > 0) {
+        _b.applyBokehBlur(_src, _dst, _maskBuf, width, height, radius);
+        _flip();
+      }
+    }
+
+    // Copy result back to Dart
+    return Uint8List.fromList(_src.asTypedList(bytes));
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  void _applyKelvin(int kelvin, int pixels) {
+    final rp = calloc<Float>();
+    final gp = calloc<Float>();
+    final bp = calloc<Float>();
+    _b.kelvinToGains(kelvin, rp, gp, bp);
+    _b.applyWhiteBalance(_src, pixels, rp.value, gp.value, bp.value);
+    calloc.free(rp);
+    calloc.free(gp);
+    calloc.free(bp);
+  }
+
+  double _vignetteStrength(LensProfile lens, double aperture) {
+    final ratio = (lens.maxAperture / aperture).clamp(0.3, 1.0);
+    return lens.vignetteStrength * ratio;
+  }
+
+  double _caFringe(LensProfile lens, double aperture) {
+    return lens.caFringePixels * (lens.maxAperture / aperture).clamp(0.5, 1.0);
+  }
+
+  int _bokehRadius(double aperture, double maxAperture) {
+    // f/1.2 at max → 28px radius; f/16 → 0
+    return (28.0 * (maxAperture / aperture)).clamp(0.0, 28.0).round();
+  }
+
+  void dispose() {
+    if (_buf0 != nullptr) { calloc.free(_buf0); _buf0 = nullptr; }
+    if (_buf1 != nullptr) { calloc.free(_buf1); _buf1 = nullptr; }
+    if (_maskBuf != nullptr) { calloc.free(_maskBuf); _maskBuf = nullptr; }
+    _bufBytes = 0;
+    _maskCount = 0;
+  }
+}
