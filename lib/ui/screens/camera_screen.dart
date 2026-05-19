@@ -6,8 +6,6 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_mlkit_selfie_segmentation/google_mlkit_selfie_segmentation.dart'
-    show InputImage;
 import 'package:image/image.dart' as img;
 import '../../core/theme/leica_colors.dart';
 import '../../features/bokeh/segmentation_service.dart';
@@ -173,8 +171,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
       // Segmentation mask for bokeh mode.
       Float32List? mask;
       if (settings.bokehEnabled && settings.mode == CaptureMode.aperture) {
-        final inputImage = InputImage.fromFile(File(xfile.path));
-        mask = await ref.read(segmentationServiceProvider).segment(inputImage);
+        mask = await ref.read(segmentationServiceProvider).segment(File(xfile.path));
       }
 
       // C++ pipeline: LUT → exposure → WB → tone → vignette → CA → bokeh.
