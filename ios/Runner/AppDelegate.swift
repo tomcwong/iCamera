@@ -17,10 +17,17 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ManualCameraPlugin")
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ManualCameraPlugin") {
+      setupChannel(with: registrar)
+    }
+  }
+
+  // Uses 'some FlutterPluginRegistrar' to open the Swift 5.7 existential so
+  // the messenger property is accessible directly.
+  private func setupChannel(with registrar: some FlutterPluginRegistrar) {
     manualCameraChannel = FlutterMethodChannel(
       name: "com.tcw3.icamera/manual_camera",
-      binaryMessenger: registrar.messenger()
+      binaryMessenger: registrar.messenger
     )
     manualCameraChannel?.setMethodCallHandler { [weak self] call, result in
       self?.handleManualCamera(call: call, result: result)
