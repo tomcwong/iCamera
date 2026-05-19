@@ -27,7 +27,7 @@ import UIKit
   private func setupChannel(with registrar: some FlutterPluginRegistrar) {
     manualCameraChannel = FlutterMethodChannel(
       name: "com.tcw3.icamera/manual_camera",
-      binaryMessenger: registrar.messenger
+      binaryMessenger: registrar.messenger()
     )
     manualCameraChannel?.setMethodCallHandler { [weak self] call, result in
       self?.handleManualCamera(call: call, result: result)
