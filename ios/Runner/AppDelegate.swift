@@ -3,7 +3,7 @@ import Flutter
 import UIKit
 
 @main
-@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+@objc class AppDelegate: FlutterAppDelegate {
 
   private var manualCameraDevice: AVCaptureDevice?
   private var manualCameraChannel: FlutterMethodChannel?
@@ -12,18 +12,14 @@ import UIKit
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    GeneratedPluginRegistrant.register(with: self)
+    if let registrar = self.registrar(forPlugin: "ManualCameraPlugin") {
+      setupChannel(with: registrar)
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
-    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "ManualCameraPlugin") {
-      setupChannel(with: registrar)
-    }
-  }
-
-  // Uses 'some FlutterPluginRegistrar' to open the Swift 5.7 existential so
-  // the messenger property is accessible directly.
+  // 'some FlutterPluginRegistrar' opens the Obj-C existential so messenger() is callable.
   private func setupChannel(with registrar: some FlutterPluginRegistrar) {
     manualCameraChannel = FlutterMethodChannel(
       name: "com.tcw3.icamera/manual_camera",

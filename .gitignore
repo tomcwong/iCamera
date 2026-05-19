@@ -43,6 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/build/
 
 # iOS CocoaPods — generated, not committed
 /ios/Pods/
@@ -54,3 +55,7 @@ app.*.map.json
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Build output drop folders (APK / IPA artifacts go here, not versioned)
+/AndroidApp/builds/
+/iPhoneApp/builds/
