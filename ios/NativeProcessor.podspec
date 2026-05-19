@@ -11,7 +11,7 @@ Pod::Spec.new do |s|
   s.source_files     = '../native/*.{cpp,h}'
   s.public_header_files = '../native/icamera_native.h'
 
-  s.ios.deployment_target = '13.0'
+  s.ios.deployment_target = '16.0'
 
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
