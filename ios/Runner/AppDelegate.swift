@@ -13,21 +13,20 @@ import UIKit
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
-    if let registrar = self.registrar(forPlugin: "ManualCameraPlugin") {
-      setupChannel(with: registrar)
-    }
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
-  }
 
-  // 'some FlutterPluginRegistrar' opens the Obj-C existential so messenger() is callable.
-  private func setupChannel(with registrar: some FlutterPluginRegistrar) {
-    manualCameraChannel = FlutterMethodChannel(
-      name: "com.tcw3.icamera/manual_camera",
-      binaryMessenger: registrar.messenger()
-    )
-    manualCameraChannel?.setMethodCallHandler { [weak self] call, result in
-      self?.handleManualCamera(call: call, result: result)
+    // Standard Flutter channel setup: get messenger from the root FlutterViewController.
+    // The storyboard sets this up before didFinishLaunchingWithOptions is called.
+    if let controller = window?.rootViewController as? FlutterViewController {
+      manualCameraChannel = FlutterMethodChannel(
+        name: "com.tcw3.icamera/manual_camera",
+        binaryMessenger: controller.binaryMessenger
+      )
+      manualCameraChannel?.setMethodCallHandler { [weak self] call, result in
+        self?.handleManualCamera(call: call, result: result)
+      }
     }
+
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   private func handleManualCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
