@@ -32,15 +32,17 @@ require File.expand_path(File.join('packages', 'flutter_tools', 'bin',
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  use_frameworks!
+  # Static linkage: all CocoaPods pods are compiled into the Runner binary directly.
+  # This avoids separate .framework files for each pod, which sideloading tools
+  # (iLoader, Sideloadly, etc.) may fail to re-sign — causing a silent SIGKILL on launch.
+  # Flutter.framework and App.framework are still dynamic (managed by Flutter, not CocoaPods).
+  use_frameworks! :linkage => :static
   use_modular_headers!
 
   # Flutter plugins
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 
-  # iCamera native C++ image processing pipeline
-  # Compiled as a static library and linked directly into the app binary.
-  # Dart FFI loads symbols via DynamicLibrary.process() on iOS.
+  # iCamera native C++ image processing pipeline (statically linked into Runner binary)
   pod 'NativeProcessor', :path => '.'
 end
 
