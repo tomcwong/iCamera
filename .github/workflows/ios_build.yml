@@ -27,16 +27,29 @@ jobs:
         run: |
           cd ios
           pod install --repo-update
+          echo "=== Podfile.lock ===" && cat Podfile.lock
 
       - name: Build iOS release (no code signing)
         run: flutter build ios --release --no-codesign
+
+      - name: List frameworks in built app
+        run: |
+          echo "=== Frameworks in Runner.app ===" && ls build/ios/iphoneos/Runner.app/Frameworks/ 2>/dev/null || echo "(no Frameworks directory)"
+          echo "=== Runner.app top-level ===" && ls build/ios/iphoneos/Runner.app/
+
+      - name: Ad-hoc sign app and all nested frameworks
+        run: |
+          find build/ios/iphoneos/Runner.app/Frameworks -name "*.framework" 2>/dev/null | while read fw; do
+            codesign --force --sign - "$fw"
+          done
+          codesign --force --sign - build/ios/iphoneos/Runner.app
 
       - name: Package IPA
         run: |
           mkdir -p build/ios/ipa/Payload
           cp -r build/ios/iphoneos/Runner.app build/ios/ipa/Payload/
           cd build/ios/ipa
-          zip -r ../iCamera.ipa Payload/
+          zip -ry ../iCamera.ipa Payload/
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
