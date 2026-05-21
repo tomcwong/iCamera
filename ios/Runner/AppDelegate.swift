@@ -19,7 +19,7 @@ import UIKit
     if let controller = window?.rootViewController as? FlutterViewController {
       manualCameraChannel = FlutterMethodChannel(
         name: "com.tcw3.icamera/manual_camera",
-        binaryMessenger: controller.binaryMessenger
+        binaryMessenger: controller.binaryMessenger()
       )
       manualCameraChannel?.setMethodCallHandler { [weak self] call, result in
         self?.handleManualCamera(call: call, result: result)
