@@ -40,9 +40,6 @@ dependencies:
   flutter_svg: ^2.0.10+1
   cached_network_image: ^3.4.1
 
-  # --- Haptic feedback ---
-  flutter_haptic_feedback: ^1.0.0
-
   # --- Device info ---
   device_info_plus: ^11.2.0
 
