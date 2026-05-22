@@ -34,8 +34,8 @@ const _shutterValues = [
   8000, 4000, 2000, 1000, 500, 250, 125, 60, 30, 15, 8, 4, 2, 1
 ];
 
-// Which top-bar column is currently expanded in the display bar.
-enum _TopPanel { ssApt, lens, wb, iso }
+// Which panel is currently shown in the display bar.
+enum _TopPanel { ssApt, lens, wb, iso, looks, view, timer }
 
 // ── Isolate helpers ───────────────────────────────────────────────────────────
 Map<String, dynamic> _decodeAndRotate(Map<String, dynamic> args) {
@@ -296,133 +296,170 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       error: (e, _) => _ErrorView(error: e.toString()),
     );
 
+    final bottomBarWidget = _BottomBar(
+      settings: settings,
+      isCapturing: _isCapturing,
+      lastCapturePath: _lastCapturePath,
+      onCapture: _capture,
+      onSettingsChanged: _updateSettings,
+      onSwitchCamera: () =>
+          ref.read(cameraControllerProvider.notifier).switchCamera(),
+      onOpenGallery: _openGallery,
+      onGearTap: () => setState(() {
+        _showGearPanel = !_showGearPanel;
+        if (_showGearPanel) _activeTopPanel = null;
+      }),
+    );
+
+    final displayBarWidget = AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeInOut,
+      child: _activeTopPanel != null
+          ? _DisplayBar(
+              panel: _activeTopPanel!,
+              settings: settings,
+              onSettingsChanged: _updateSettings,
+              onWbChanged: (k) =>
+                  _updateSettings((s) => s.copyWith(whiteBalanceKelvin: k)),
+            )
+          : const SizedBox.shrink(),
+    );
+
+    final topHudWidget = _TopHud(
+      settings: settings,
+      activePanel: _activeTopPanel,
+      onPanelTap: _toggleTopPanel,
+    );
+
+    final gearOverlay = _showGearPanel
+        ? Positioned.fill(
+            child: _GearPanel(
+              settings: settings,
+              onDismiss: () => setState(() => _showGearPanel = false),
+              onSettingsChanged: _updateSettings,
+              onPanelActivate: (panel) => setState(() {
+                _showGearPanel = false;
+                _activeTopPanel = panel;
+              }),
+            ),
+          )
+        : null;
+
+    final previewStack = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onScaleStart: (_) => _baseZoom = _currentZoom,
+      onScaleUpdate: (d) {
+        if (d.pointerCount >= 2) {
+          _setZoom((_baseZoom * d.scale).clamp(1.0, 10.0));
+        }
+      },
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          previewWidget,
+          if (settings.aspectRatio == CaptureAspectRatio.aspect16_9)
+            _AspectCropOverlay(isLandscape: isLandscape),
+          if (_zoomIndicatorVisible)
+            Positioned(
+              bottom: 12,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '${_currentZoom.toStringAsFixed(1)}×',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+
+    if (isLandscape) {
+      // ── Landscape: preview fills safe area height, controls overlay ─
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            // Preview centred in safe area, full height
+            SafeArea(
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: previewAspect,
+                  child: previewStack,
+                ),
+              ),
+            ),
+            // Top HUD overlay
+            Positioned(
+              top: 0, left: 0, right: 0,
+              child: SafeArea(
+                bottom: false,
+                child: Container(
+                  color: Colors.black.withValues(alpha: 0.55),
+                  child: topHudWidget,
+                ),
+              ),
+            ),
+            // Display bar overlay (above bottom bar)
+            Positioned(
+              bottom: 76,
+              left: 0,
+              right: 0,
+              child: displayBarWidget,
+            ),
+            // Bottom bar overlay
+            Positioned(
+              bottom: 0, left: 0, right: 0,
+              child: SafeArea(
+                top: false,
+                child: Container(
+                  color: Colors.black.withValues(alpha: 0.55),
+                  child: bottomBarWidget,
+                ),
+              ),
+            ),
+            ?gearOverlay,
+          ],
+        ),
+      );
+    }
+
+    // ── Portrait: Column layout, nothing overlaps preview ───────────
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // ── Main column layout ──────────────────────────────────────
           SafeArea(
             bottom: false,
             child: Column(
               children: [
-                // Top HUD
-                _TopHud(
-                  settings: settings,
-                  activePanel: _activeTopPanel,
-                  onPanelTap: _toggleTopPanel,
+                topHudWidget,
+                // Preview: full width, constrained to sensor aspect ratio
+                AspectRatio(
+                  aspectRatio: previewAspect,
+                  child: previewStack,
                 ),
-
-                // Preview area
-                Expanded(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onScaleStart: (_) => _baseZoom = _currentZoom,
-                    onScaleUpdate: (d) {
-                      if (d.pointerCount >= 2) {
-                        _setZoom((_baseZoom * d.scale).clamp(1.0, 10.0));
-                      }
-                    },
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        // Constrained preview — fixes portrait compression bug
-                        Center(
-                          child: AspectRatio(
-                            aspectRatio: previewAspect,
-                            child: previewWidget,
-                          ),
-                        ),
-                        // 16:9 crop overlay
-                        if (settings.aspectRatio ==
-                            CaptureAspectRatio.aspect16_9)
-                          Center(
-                            child: AspectRatio(
-                              aspectRatio: previewAspect,
-                              child: _AspectCropOverlay(
-                                  isLandscape: isLandscape),
-                            ),
-                          ),
-                        // Zoom indicator
-                        if (_zoomIndicatorVisible)
-                          Positioned(
-                            bottom: 12,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 14, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: Colors.black54,
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Text(
-                                '${_currentZoom.toStringAsFixed(1)}×',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                // Display bar — contextual selector, animates in/out
-                AnimatedSize(
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeInOut,
-                  child: _activeTopPanel != null
-                      ? _DisplayBar(
-                          panel: _activeTopPanel!,
-                          settings: settings,
-                          onSettingsChanged: _updateSettings,
-                          onWbChanged: (k) => _updateSettings(
-                              (s) => s.copyWith(whiteBalanceKelvin: k)),
-                        )
-                      : const SizedBox.shrink(),
-                ),
-
-                // Bottom bar
-                _BottomBar(
-                  settings: settings,
-                  isCapturing: _isCapturing,
-                  lastCapturePath: _lastCapturePath,
-                  onCapture: _capture,
-                  onSettingsChanged: _updateSettings,
-                  onSwitchCamera: () =>
-                      ref.read(cameraControllerProvider.notifier).switchCamera(),
-                  onOpenGallery: _openGallery,
-                  onGearTap: () => setState(() {
-                    _showGearPanel = !_showGearPanel;
-                    if (_showGearPanel) _activeTopPanel = null;
-                  }),
-                ),
-
-                // Bottom safe area padding
-                SizedBox(
-                    height: MediaQuery.of(context).padding.bottom +
-                        (isLandscape ? 4 : 8)),
+                displayBarWidget,
+                bottomBarWidget,
+                SizedBox(height: MediaQuery.of(context).padding.bottom + 8),
               ],
             ),
           ),
-
-          // ── Gear panel overlay ──────────────────────────────────────
-          if (_showGearPanel)
-            Positioned.fill(
-              child: _GearPanel(
-                settings: settings,
-                onDismiss: () => setState(() => _showGearPanel = false),
-                onSettingsChanged: _updateSettings,
-                onPanelActivate: (panel) {
-                  setState(() {
-                    _showGearPanel = false;
-                    _activeTopPanel = panel;
-                  });
-                },
-              ),
-            ),
+          ?gearOverlay,
         ],
       ),
     );
@@ -451,48 +488,55 @@ class _CameraPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final previewSize = controller.value.previewSize!;
-    final int turns = _quarterTurns(controller.description);
-    final int sensor = controller.description.sensorOrientation;
     final bool deviceLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
-    final bool pluginRotates = !deviceLandscape &&
-        Platform.isAndroid &&
-        turns == 0 &&
-        (sensor == 90 || sensor == 270);
-    final bool swapDims = (turns % 2 == 1) || pluginRotates;
-    final double displayW =
-        swapDims ? previewSize.height : previewSize.width;
-    final double displayH =
-        swapDims ? previewSize.width : previewSize.height;
+
+    // On iOS, AVFoundation handles orientation internally — just wrap CameraPreview
+    // directly so it fills the AspectRatio box without FittedBox confusion.
+    // On Android, manually rotate/scale based on sensor orientation.
+    Widget cameraChild;
+    if (Platform.isIOS) {
+      cameraChild = CameraPreview(controller);
+    } else {
+      final previewSize = controller.value.previewSize!;
+      final int turns = _quarterTurns(controller.description);
+      final int sensor = controller.description.sensorOrientation;
+      final bool pluginRotates = !deviceLandscape &&
+          turns == 0 &&
+          (sensor == 90 || sensor == 270);
+      final bool swapDims = (turns % 2 == 1) || pluginRotates;
+      final double displayW =
+          swapDims ? previewSize.height : previewSize.width;
+      final double displayH =
+          swapDims ? previewSize.width : previewSize.height;
+      cameraChild = FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(
+          width: displayW,
+          height: displayH,
+          child: RotatedBox(
+            quarterTurns: turns,
+            child: CameraPreview(controller),
+          ),
+        ),
+      );
+    }
 
     return ClipRect(
       child: Stack(
         fit: StackFit.expand,
         children: [
-          FittedBox(
-            fit: BoxFit.cover,
-            child: SizedBox(
-              width: displayW,
-              height: displayH,
-              child: RotatedBox(
-                quarterTurns: turns,
-                child: ColorFiltered(
-                  colorFilter: ColorFilter.matrix(
-                      settings.selectedLook.previewMatrix),
-                  child: ColorFiltered(
-                    colorFilter: ColorFilter.matrix(
-                        _CameraPreview._wbMatrix(
-                            settings.whiteBalanceKelvin)),
-                    child: CameraPreview(controller),
-                  ),
-                ),
-              ),
+          ColorFiltered(
+            colorFilter: ColorFilter.matrix(
+                settings.selectedLook.previewMatrix),
+            child: ColorFiltered(
+              colorFilter: ColorFilter.matrix(
+                  _CameraPreview._wbMatrix(settings.whiteBalanceKelvin)),
+              child: cameraChild,
             ),
           ),
           _VignetteOverlay(strength: settings.selectedLens.vignetteStrength),
           _LensTintOverlay(tint: settings.selectedLens.previewTint),
-          // Look badge — top-right corner of the preview box
           Positioned(
             top: 8,
             right: 8,
@@ -641,39 +685,41 @@ class _TopHud extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // SS / APT — combined left column
+          // SS / APT — two sub-columns, each label centred over its value
           _HudTap(
             active: activePanel == _TopPanel.ssApt,
             onTap: () => onPanelTap(_TopPanel.ssApt),
-            child: Column(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Row(
+                Column(
                   mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                     const Text('SS',
                         style: TextStyle(
                             color: LeicaColors.textDisabled,
                             fontSize: 7,
                             letterSpacing: 1.5)),
-                    const SizedBox(width: 10),
-                    const Text('APT',
-                        style: TextStyle(
-                            color: LeicaColors.textDisabled,
-                            fontSize: 7,
-                            letterSpacing: 1.5)),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
+                    const SizedBox(height: 2),
                     Text(settings.shutterSpeedLabel,
                         style: const TextStyle(
                             color: LeicaColors.textPrimary,
                             fontSize: 13,
                             fontWeight: FontWeight.w500)),
-                    const SizedBox(width: 6),
+                  ],
+                ),
+                const SizedBox(width: 12),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    const Text('APT',
+                        style: TextStyle(
+                            color: LeicaColors.textDisabled,
+                            fontSize: 7,
+                            letterSpacing: 1.5)),
+                    const SizedBox(height: 2),
                     Text(settings.apertureLabel,
                         style: const TextStyle(
                             color: LeicaColors.textPrimary,
@@ -846,6 +892,19 @@ class _DisplayBar extends StatelessWidget {
             settings: settings,
             onSettingsChanged: onSettingsChanged,
           ),
+        _TopPanel.looks => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: LookSelector(
+              selected: settings.selectedLook,
+              onSelected: (look) =>
+                  onSettingsChanged((s) => s.copyWith(selectedLook: look)),
+            ),
+          ),
+        _TopPanel.view => const _ViewPanel(),
+        _TopPanel.timer => _TimerPanel(
+            settings: settings,
+            onSettingsChanged: onSettingsChanged,
+          ),
       },
     );
   }
@@ -877,34 +936,13 @@ class _SsAptPanel extends StatelessWidget {
     if (settings.mode == CaptureMode.aperture) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            ApertureDial(
-              aperture: settings.aperture,
-              maxAperture: settings.selectedLens.maxAperture,
-              onChanged: (apt) =>
-                  onSettingsChanged((s) => s.copyWith(aperture: apt)),
-            ),
-            const SizedBox(width: 24),
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('BOKEH',
-                    style: TextStyle(
-                        color: LeicaColors.textDisabled,
-                        fontSize: 9,
-                        letterSpacing: 1.5)),
-                const SizedBox(height: 4),
-                Switch(
-                  value: settings.bokehEnabled,
-                  onChanged: (v) =>
-                      onSettingsChanged((s) => s.copyWith(bokehEnabled: v)),
-                  activeThumbColor: LeicaColors.red,
-                ),
-              ],
-            ),
-          ],
+        child: Center(
+          child: ApertureDial(
+            aperture: settings.aperture,
+            maxAperture: settings.selectedLens.maxAperture,
+            onChanged: (apt) =>
+                onSettingsChanged((s) => s.copyWith(aperture: apt)),
+          ),
         ),
       );
     }
@@ -957,6 +995,121 @@ class _IsoPanel extends StatelessWidget {
         onChanged: (i) =>
             onSettingsChanged((s) => s.copyWith(iso: _isoValues[i])),
         label: 'ISO',
+      ),
+    );
+  }
+}
+
+// ── View panel ────────────────────────────────────────────────────────────────
+class _ViewPanel extends StatelessWidget {
+  const _ViewPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _ViewChip(icon: Icons.grid_on_outlined, label: 'GRID', enabled: false),
+          _ViewChip(icon: Icons.straighten_outlined, label: 'LEVEL', enabled: false),
+          _ViewChip(icon: Icons.flip_outlined, label: 'MIRROR', enabled: false),
+        ],
+      ),
+    );
+  }
+}
+
+class _ViewChip extends StatelessWidget {
+  const _ViewChip(
+      {required this.icon, required this.label, required this.enabled});
+  final IconData icon;
+  final String label;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: enabled
+                ? LeicaColors.red.withValues(alpha: 0.2)
+                : Colors.white.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+                color: enabled ? LeicaColors.red : Colors.white24, width: 1),
+          ),
+          child: Icon(icon,
+              color: enabled ? LeicaColors.red : Colors.white54, size: 20),
+        ),
+        const SizedBox(height: 4),
+        Text(label,
+            style: TextStyle(
+                color: enabled ? LeicaColors.red : Colors.white38,
+                fontSize: 8,
+                letterSpacing: 1)),
+        Text('SOON',
+            style: const TextStyle(
+                color: Colors.white24, fontSize: 7, letterSpacing: 0.5)),
+      ],
+    );
+  }
+}
+
+// ── Timer panel ───────────────────────────────────────────────────────────────
+class _TimerPanel extends StatelessWidget {
+  const _TimerPanel(
+      {required this.settings, required this.onSettingsChanged});
+  final CaptureSettings settings;
+  final void Function(CaptureSettings Function(CaptureSettings))
+      onSettingsChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    const options = [0, 3, 5, 10];
+    final selected = settings.timerSeconds;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: options.map((sec) {
+          final isSelected = sec == selected;
+          return GestureDetector(
+            onTap: () {
+              HapticFeedback.selectionClick();
+              onSettingsChanged((s) => s.copyWith(timerSeconds: sec));
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: isSelected
+                    ? LeicaColors.red.withValues(alpha: 0.2)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: isSelected ? LeicaColors.red : LeicaColors.midGray,
+                  width: isSelected ? 1.5 : 1,
+                ),
+              ),
+              child: Text(
+                sec == 0 ? 'OFF' : '${sec}s',
+                style: TextStyle(
+                  color: isSelected
+                      ? LeicaColors.red
+                      : LeicaColors.textSecondary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 1,
+                ),
+              ),
+            ),
+          );
+        }).toList(),
       ),
     );
   }
@@ -1195,16 +1348,18 @@ class _GearPanel extends StatelessWidget {
                       _GearBtn(
                         icon: Icons.grid_on,
                         label: 'VIEW',
-                        sublabel: 'SOON',
+                        sublabel: 'GRID/LVL',
                         active: false,
-                        onTap: onDismiss,
+                        onTap: () => onPanelActivate(_TopPanel.view),
                       ),
                       _GearBtn(
                         icon: Icons.timer_outlined,
                         label: 'TIMER',
-                        sublabel: 'SOON',
-                        active: false,
-                        onTap: onDismiss,
+                        sublabel: settings.timerSeconds == 0
+                            ? 'OFF'
+                            : '${settings.timerSeconds}s',
+                        active: settings.timerSeconds > 0,
+                        onTap: () => onPanelActivate(_TopPanel.timer),
                       ),
                     ]),
                     const SizedBox(height: 12),
@@ -1228,7 +1383,7 @@ class _GearPanel extends StatelessWidget {
                         sublabel: settings.selectedLook.displayName
                             .toUpperCase(),
                         active: false,
-                        onTap: () => _showLooksSheet(context),
+                        onTap: () => onPanelActivate(_TopPanel.looks),
                       ),
                       _GearBtn(
                         icon: Icons.camera_outlined,
@@ -1298,25 +1453,6 @@ class _GearPanel extends StatelessWidget {
     );
   }
 
-  void _showLooksSheet(BuildContext context) {
-    onDismiss();
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.black,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (_) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        child: LookSelector(
-          selected: settings.selectedLook,
-          onSelected: (look) {
-            onSettingsChanged((s) => s.copyWith(selectedLook: look));
-            Navigator.pop(context);
-          },
-        ),
-      ),
-    );
-  }
 }
 
 class _GearRow extends StatelessWidget {
