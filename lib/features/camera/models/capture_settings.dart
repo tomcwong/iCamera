@@ -4,9 +4,10 @@ import '../../lens_simulation/lens_profile.dart';
 
 enum CaptureMode { auto, manual, aperture }
 
-/// Standard = veryHigh preset (~8MP) — fast encode, great for sharing.
-/// High     = max preset (full sensor MP) — slower, best for large prints.
 enum CaptureQuality { standard, high }
+
+/// 4:3 = natural sensor ratio (default). 16:9 = cropped wide.
+enum CaptureAspectRatio { aspect4_3, aspect16_9 }
 
 class CaptureSettings {
   const CaptureSettings({
@@ -22,6 +23,7 @@ class CaptureSettings {
     this.bokehEnabled = false,
     this.exposureCompensation = 0.0,
     this.quality = CaptureQuality.standard,
+    this.aspectRatio = CaptureAspectRatio.aspect4_3,
   });
 
   final CaptureMode mode;
@@ -36,6 +38,7 @@ class CaptureSettings {
   final bool bokehEnabled;
   final double exposureCompensation;
   final CaptureQuality quality;
+  final CaptureAspectRatio aspectRatio;
 
   static const List<int> wbPresets = [2800, 3500, 4500, 5500, 6500, 8000];
   static const List<String> wbLabels = ['Bulb', 'Indoor', 'Fluorescent', 'Daylight', 'Cloudy', 'Shade'];
@@ -58,6 +61,7 @@ class CaptureSettings {
     bool? bokehEnabled,
     double? exposureCompensation,
     CaptureQuality? quality,
+    CaptureAspectRatio? aspectRatio,
   }) {
     return CaptureSettings(
       mode: mode ?? this.mode,
@@ -72,6 +76,7 @@ class CaptureSettings {
       bokehEnabled: bokehEnabled ?? this.bokehEnabled,
       exposureCompensation: exposureCompensation ?? this.exposureCompensation,
       quality: quality ?? this.quality,
+      aspectRatio: aspectRatio ?? this.aspectRatio,
     );
   }
 }
