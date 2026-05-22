@@ -23,7 +23,7 @@ class ExposureWheel extends StatefulWidget {
 
 class _ExposureWheelState extends State<ExposureWheel> {
   late final ScrollController _scroll;
-  static const double _itemWidth = 52.0;
+  static const double _itemWidth = 60.0;
 
   @override
   void initState() {
@@ -77,9 +77,11 @@ class _ExposureWheelState extends State<ExposureWheel> {
                     return Center(
                       child: Text(
                         widget.values[i],
+                        softWrap: false,
+                        overflow: TextOverflow.visible,
                         style: TextStyle(
                           color: isSelected ? LeicaColors.textPrimary : LeicaColors.textDisabled,
-                          fontSize: isSelected ? 14 : 11,
+                          fontSize: isSelected ? 13 : 11,
                           fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
                           letterSpacing: 0.3,
                         ),

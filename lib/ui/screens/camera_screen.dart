@@ -18,7 +18,6 @@ import '../../features/raw_capture/dng_writer.dart';
 import '../../services/image_pipeline.dart';
 import '../../services/manual_camera_service.dart';
 import '../widgets/shutter_button.dart';
-import '../widgets/aperture_dial.dart';
 import '../widgets/exposure_wheel.dart';
 import '../widgets/look_selector.dart';
 import '../widgets/wb_selector.dart';
@@ -32,6 +31,9 @@ const _isoValues = [
 ];
 const _shutterValues = [
   8000, 4000, 2000, 1000, 500, 250, 125, 60, 30, 15, 8, 4, 2, 1
+];
+const _apertureValues = [
+  1.0, 1.2, 1.4, 1.8, 2.0, 2.4, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0
 ];
 
 // Which panel is currently shown in the display bar.
@@ -123,6 +125,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   // UI state
   _TopPanel? _activeTopPanel;
   bool _showGearPanel = false;
+  int _timerCountdown = 0;
+  bool _showGrid = false;
 
   @override
   void initState() {
@@ -170,13 +174,22 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   }
 
   Future<void> _capture() async {
-    if (_isCapturing) return;
+    if (_isCapturing || _timerCountdown > 0) return;
+    final settings = ref.read(captureSettingsProvider);
+    if (settings.timerSeconds > 0) {
+      for (int i = settings.timerSeconds; i > 0; i--) {
+        if (!mounted) return;
+        setState(() => _timerCountdown = i);
+        await Future.delayed(const Duration(seconds: 1));
+      }
+      if (!mounted) return;
+      setState(() => _timerCountdown = 0);
+    }
     setState(() => _isCapturing = true);
     final xfile =
         await ref.read(cameraControllerProvider.notifier).capture();
     setState(() => _isCapturing = false);
     if (xfile == null) return;
-    final settings = ref.read(captureSettingsProvider);
     final rotAngle = _captureRotationDegrees();
     _processAndSave(xfile, settings, rotAngle);
   }
@@ -206,12 +219,16 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       }
 
       // Crop to selected aspect ratio.
+      // For a portrait source (width < height) 16:9 means 9:16 (tall crop).
       if (settings.aspectRatio == CaptureAspectRatio.aspect16_9) {
+        final srcW = decodeResult['width'] as int;
+        final srcH = decodeResult['height'] as int;
+        final targetAspect = srcW < srcH ? 9.0 / 16.0 : 16.0 / 9.0;
         decodeResult = await compute(_cropToAspect, {
           'rgba': decodeResult['rgba'],
-          'width': decodeResult['width'],
-          'height': decodeResult['height'],
-          'targetAspect': 16.0 / 9.0,
+          'width': srcW,
+          'height': srcH,
+          'targetAspect': targetAspect,
         });
       }
 
@@ -311,18 +328,14 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       }),
     );
 
-    final displayBarWidget = AnimatedSize(
-      duration: const Duration(milliseconds: 200),
-      curve: Curves.easeInOut,
-      child: _activeTopPanel != null
-          ? _DisplayBar(
-              panel: _activeTopPanel!,
-              settings: settings,
-              onSettingsChanged: _updateSettings,
-              onWbChanged: (k) =>
-                  _updateSettings((s) => s.copyWith(whiteBalanceKelvin: k)),
-            )
-          : const SizedBox.shrink(),
+    final displayBarWidget = _DisplayBar(
+      panel: _activeTopPanel ?? _TopPanel.lens,
+      settings: settings,
+      onSettingsChanged: _updateSettings,
+      onWbChanged: (k) =>
+          _updateSettings((s) => s.copyWith(whiteBalanceKelvin: k)),
+      showGrid: _showGrid,
+      onGridToggle: () => setState(() => _showGrid = !_showGrid),
     );
 
     final topHudWidget = _TopHud(
@@ -359,6 +372,19 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
           previewWidget,
           if (settings.aspectRatio == CaptureAspectRatio.aspect16_9)
             _AspectCropOverlay(isLandscape: isLandscape),
+          if (_showGrid) const _GridOverlay(),
+          if (_timerCountdown > 0)
+            Center(
+              child: Text(
+                '$_timerCountdown',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 96,
+                  fontWeight: FontWeight.w200,
+                  shadows: [Shadow(color: Colors.black54, blurRadius: 24)],
+                ),
+              ),
+            ),
           if (_zoomIndicatorVisible)
             Positioned(
               bottom: 12,
@@ -414,12 +440,15 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                 ),
               ),
             ),
-            // Display bar overlay (above bottom bar)
+            // Display bar overlay (always visible, above bottom bar)
             Positioned(
-              bottom: 76,
+              bottom: 80,
               left: 0,
               right: 0,
-              child: displayBarWidget,
+              child: Container(
+                color: Colors.black.withValues(alpha: 0.55),
+                child: displayBarWidget,
+              ),
             ),
             // Bottom bar overlay
             Positioned(
@@ -438,26 +467,27 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       );
     }
 
-    // ── Portrait: Column layout, nothing overlaps preview ───────────
+    // ── Portrait: Column layout, bottom bar pinned to screen bottom ─
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
+        fit: StackFit.expand,
         children: [
-          SafeArea(
-            bottom: false,
-            child: Column(
-              children: [
-                topHudWidget,
-                // Preview: full width, constrained to sensor aspect ratio
-                AspectRatio(
-                  aspectRatio: previewAspect,
-                  child: previewStack,
-                ),
-                displayBarWidget,
-                bottomBarWidget,
-                SizedBox(height: MediaQuery.of(context).padding.bottom + 8),
-              ],
-            ),
+          Column(
+            children: [
+              SafeArea(
+                bottom: false,
+                child: topHudWidget,
+              ),
+              AspectRatio(
+                aspectRatio: previewAspect,
+                child: previewStack,
+              ),
+              displayBarWidget,
+              const Spacer(),
+              bottomBarWidget,
+              SizedBox(height: MediaQuery.of(context).padding.bottom),
+            ],
           ),
           ?gearOverlay,
         ],
@@ -855,12 +885,16 @@ class _DisplayBar extends StatelessWidget {
     required this.settings,
     required this.onSettingsChanged,
     required this.onWbChanged,
+    required this.showGrid,
+    required this.onGridToggle,
   });
 
   final _TopPanel panel;
   final CaptureSettings settings;
   final void Function(CaptureSettings Function(CaptureSettings)) onSettingsChanged;
   final ValueChanged<int> onWbChanged;
+  final bool showGrid;
+  final VoidCallback onGridToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -900,7 +934,7 @@ class _DisplayBar extends StatelessWidget {
                   onSettingsChanged((s) => s.copyWith(selectedLook: look)),
             ),
           ),
-        _TopPanel.view => const _ViewPanel(),
+        _TopPanel.view => _ViewPanel(showGrid: showGrid, onGridToggle: onGridToggle),
         _TopPanel.timer => _TimerPanel(
             settings: settings,
             onSettingsChanged: onSettingsChanged,
@@ -935,14 +969,17 @@ class _SsAptPanel extends StatelessWidget {
     }
     if (settings.mode == CaptureMode.aperture) {
       return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-        child: Center(
-          child: ApertureDial(
-            aperture: settings.aperture,
-            maxAperture: settings.selectedLens.maxAperture,
-            onChanged: (apt) =>
-                onSettingsChanged((s) => s.copyWith(aperture: apt)),
-          ),
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: ExposureWheel(
+          values: _apertureValues
+              .map((v) => 'f/${v.toStringAsFixed(1)}')
+              .toList(),
+          selectedIndex: _apertureValues
+              .indexWhere((v) => (v - settings.aperture).abs() < 0.05)
+              .clamp(0, _apertureValues.length - 1),
+          onChanged: (i) =>
+              onSettingsChanged((s) => s.copyWith(aperture: _apertureValues[i])),
+          label: 'APERTURE',
         ),
       );
     }
@@ -1002,7 +1039,9 @@ class _IsoPanel extends StatelessWidget {
 
 // ── View panel ────────────────────────────────────────────────────────────────
 class _ViewPanel extends StatelessWidget {
-  const _ViewPanel();
+  const _ViewPanel({required this.showGrid, required this.onGridToggle});
+  final bool showGrid;
+  final VoidCallback onGridToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -1011,9 +1050,27 @@ class _ViewPanel extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          _ViewChip(icon: Icons.grid_on_outlined, label: 'GRID', enabled: false),
-          _ViewChip(icon: Icons.straighten_outlined, label: 'LEVEL', enabled: false),
-          _ViewChip(icon: Icons.flip_outlined, label: 'MIRROR', enabled: false),
+          _ViewChip(
+            icon: Icons.grid_on_outlined,
+            label: 'GRID',
+            enabled: showGrid,
+            soon: false,
+            onTap: onGridToggle,
+          ),
+          _ViewChip(
+            icon: Icons.straighten_outlined,
+            label: 'LEVEL',
+            enabled: false,
+            soon: true,
+            onTap: () {},
+          ),
+          _ViewChip(
+            icon: Icons.flip_outlined,
+            label: 'MIRROR',
+            enabled: false,
+            soon: true,
+            onTap: () {},
+          ),
         ],
       ),
     );
@@ -1021,40 +1078,63 @@ class _ViewPanel extends StatelessWidget {
 }
 
 class _ViewChip extends StatelessWidget {
-  const _ViewChip(
-      {required this.icon, required this.label, required this.enabled});
+  const _ViewChip({
+    required this.icon,
+    required this.label,
+    required this.enabled,
+    required this.soon,
+    required this.onTap,
+  });
   final IconData icon;
   final String label;
   final bool enabled;
+  final bool soon;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: enabled
-                ? LeicaColors.red.withValues(alpha: 0.2)
-                : Colors.white.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-                color: enabled ? LeicaColors.red : Colors.white24, width: 1),
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: enabled
+                  ? LeicaColors.red.withValues(alpha: 0.2)
+                  : Colors.white.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                  color: enabled ? LeicaColors.red : Colors.white24, width: 1),
+            ),
+            child: Icon(icon,
+                color: enabled ? LeicaColors.red : Colors.white54, size: 20),
           ),
-          child: Icon(icon,
-              color: enabled ? LeicaColors.red : Colors.white54, size: 20),
-        ),
-        const SizedBox(height: 4),
-        Text(label,
-            style: TextStyle(
-                color: enabled ? LeicaColors.red : Colors.white38,
-                fontSize: 8,
-                letterSpacing: 1)),
-        Text('SOON',
-            style: const TextStyle(
-                color: Colors.white24, fontSize: 7, letterSpacing: 0.5)),
-      ],
+          const SizedBox(height: 4),
+          Text(label,
+              style: TextStyle(
+                  color: enabled ? LeicaColors.red : Colors.white38,
+                  fontSize: 8,
+                  letterSpacing: 1)),
+          if (soon)
+            const Text('SOON',
+                style: TextStyle(
+                    color: Colors.white24, fontSize: 7, letterSpacing: 0.5))
+          else
+            Text(
+              enabled ? 'ON' : 'OFF',
+              style: TextStyle(
+                  color: enabled ? LeicaColors.red : Colors.white38,
+                  fontSize: 7,
+                  letterSpacing: 0.5),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -1185,32 +1265,29 @@ class _ModePair extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _MiniModeChip(
-              label: 'AUTO',
-              selected: settings.mode == CaptureMode.auto,
-              onTap: () {
-                HapticFeedback.selectionClick();
-                onModeChanged(CaptureMode.auto);
-              },
-            ),
-            const SizedBox(width: 4),
-            _MiniModeChip(
-              label: 'PRO',
-              selected: settings.mode == CaptureMode.manual,
-              onTap: () {
-                HapticFeedback.selectionClick();
-                onModeChanged(CaptureMode.manual);
-              },
-            ),
-          ],
-        ),
-      ],
+    return SizedBox(
+      height: 52,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _MiniModeChip(
+            label: 'AUTO',
+            selected: settings.mode == CaptureMode.auto,
+            onTap: () {
+              HapticFeedback.selectionClick();
+              onModeChanged(CaptureMode.auto);
+            },
+          ),
+          _MiniModeChip(
+            label: 'PRO',
+            selected: settings.mode == CaptureMode.manual,
+            onTap: () {
+              HapticFeedback.selectionClick();
+              onModeChanged(CaptureMode.manual);
+            },
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1606,23 +1683,24 @@ class _ThumbnailPreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (path == null) {
-      return Container(
-        width: 52,
-        height: 52,
-        decoration: BoxDecoration(
-          border: Border.all(color: LeicaColors.midGray, width: 1),
-          borderRadius: BorderRadius.circular(6),
-        ),
-      );
-    }
     return GestureDetector(
       onTap: onTap,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(6),
-        child: Image.file(File(path!),
-            width: 52, height: 52, fit: BoxFit.cover),
-      ),
+      child: path == null
+          ? Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                border: Border.all(color: LeicaColors.midGray, width: 1),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: const Icon(Icons.photo_library_outlined,
+                  color: LeicaColors.textDisabled, size: 20),
+            )
+          : ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Image.file(File(path!),
+                  width: 52, height: 52, fit: BoxFit.cover),
+            ),
     );
   }
 }
@@ -1657,4 +1735,39 @@ class _ErrorView extends StatelessWidget {
       ),
     );
   }
+}
+
+// ── Grid overlay (rule-of-thirds) ─────────────────────────────────────────────
+class _GridOverlay extends StatelessWidget {
+  const _GridOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: CustomPaint(
+        painter: _GridPainter(),
+        child: const SizedBox.expand(),
+      ),
+    );
+  }
+}
+
+class _GridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.28)
+      ..strokeWidth = 0.5;
+    canvas.drawLine(
+        Offset(size.width / 3, 0), Offset(size.width / 3, size.height), paint);
+    canvas.drawLine(
+        Offset(size.width * 2 / 3, 0), Offset(size.width * 2 / 3, size.height), paint);
+    canvas.drawLine(
+        Offset(0, size.height / 3), Offset(size.width, size.height / 3), paint);
+    canvas.drawLine(
+        Offset(0, size.height * 2 / 3), Offset(size.width, size.height * 2 / 3), paint);
+  }
+
+  @override
+  bool shouldRepaint(_GridPainter old) => false;
 }
