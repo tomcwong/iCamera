@@ -15,7 +15,7 @@ extension LensProfileInfo on LensProfile {
 
   String get shortName => switch (this) {
         LensProfile.noctilux50 => '50mm',
-        LensProfile.summilux28 => '28mm',
+        LensProfile.summilux28 => '26mm', // iPhone 13/14/15 native wide = 26mm equiv
         LensProfile.summilux35 => '35mm',
       };
 

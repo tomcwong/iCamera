@@ -46,7 +46,11 @@ enum _TopPanel { ssApt, lens, wb, iso, looks, view, timer }
 Map<String, dynamic> _decodeAndRotate(Map<String, dynamic> args) {
   final bytes = args['bytes'] as Uint8List;
   final angle = args['angle'] as int;
+  final bakeOrient = args['bakeOrientation'] as bool? ?? false;
   var decoded = img.decodeJpg(bytes)!;
+  // Bake EXIF orientation so pixel data is always upright (needed on iOS
+  // because AVCapturePhotoOutput embeds orientation=6 but pixels are landscape).
+  if (bakeOrient) decoded = img.bakeOrientation(decoded);
   if (angle != 0) decoded = img.copyRotate(decoded, angle: angle);
   return {
     'rgba': Uint8List.fromList(decoded.getBytes(order: img.ChannelOrder.rgba)),
@@ -155,6 +159,36 @@ Uint8List? _extractApp1Exif(Uint8List jpeg) {
     i += 2 + segLen;
   }
   return null;
+}
+
+// Patch the EXIF orientation tag in an APP1 byte buffer to 1 (upright, no rotation).
+// Needed after bakeOrientation bakes the rotation into pixels — the original tag
+// would otherwise cause a second rotation by Photos.app.
+Uint8List _patchExifOrientation1(Uint8List app1) {
+  if (app1.length < 18) return app1;
+  // Verify "Exif\0\0" at bytes 4–9
+  if (app1[4] != 0x45 || app1[5] != 0x78 || app1[6] != 0x69 ||
+      app1[7] != 0x66 || app1[8] != 0x00 || app1[9] != 0x00) { return app1; }
+  final t = 10; // TIFF header offset within app1
+  final le = app1[t] == 0x49; // 'II' = little-endian
+  int r16(int o) => le ? (app1[o] | app1[o + 1] << 8) : (app1[o] << 8 | app1[o + 1]);
+  int r32(int o) => le
+      ? (app1[o] | app1[o + 1] << 8 | app1[o + 2] << 16 | app1[o + 3] << 24)
+      : (app1[o] << 24 | app1[o + 1] << 16 | app1[o + 2] << 8 | app1[o + 3]);
+  final ifd0 = t + r32(t + 4);
+  if (ifd0 + 2 > app1.length) return app1;
+  final n = r16(ifd0);
+  for (int i = 0; i < n; i++) {
+    final e = ifd0 + 2 + i * 12;
+    if (e + 12 > app1.length) break;
+    if (r16(e) == 0x0112) { // Orientation tag
+      final out = Uint8List.fromList(app1);
+      if (le) { out[e + 8] = 1; out[e + 9] = 0; }
+      else     { out[e + 8] = 0; out[e + 9] = 1; }
+      return out;
+    }
+  }
+  return app1;
 }
 
 // Inject an APP1 segment into a JPEG, replacing any existing APP0/APP1.
@@ -331,6 +365,9 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         decodeResult = await compute(_decodeAndRotate, {
           'bytes': rawBytes,
           'angle': rotAngle,
+          // On iOS the capture JPEG has orientation=6 (pixels are landscape).
+          // bakeOrientation rotates them to portrait so they're always upright.
+          'bakeOrientation': Platform.isIOS,
         });
       } catch (_) {}
 
@@ -391,7 +428,9 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       });
 
       // Preserve original camera EXIF (real ISO/SS/FL) via pure-Dart APP1 injection.
-      final app1 = _extractApp1Exif(rawBytes);
+      // Patch orientation to 1 because bakeOrientation already rotated the pixels.
+      final app1Raw = _extractApp1Exif(rawBytes);
+      final app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
       final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
       final path = await DngWriter.instance.saveProcessedJpeg(finalJpeg);
       // Best-effort GPS addition via native_exif.
@@ -442,7 +481,13 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     });
   }
 
-  void _openGallery() => ManualCameraService.instance.openGallery();
+  void _openGallery() {
+    if (_lastCapturePath != null && mounted) {
+      Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => _PhotoViewPage(path: _lastCapturePath!),
+      ));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -532,7 +577,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         fit: StackFit.expand,
         children: [
           previewWidget,
-          if (!isLandscape) const _PortraitFrameOverlay(),
           if (settings.aspectRatio == CaptureAspectRatio.aspect16_9)
             _AspectCropOverlay(isLandscape: isLandscape, controller: activeController),
           if (_showGrid) const _GridOverlay(),
@@ -642,7 +686,38 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                 bottom: false,
                 child: topHudWidget,
               ),
-              Expanded(child: previewStack),
+              // Expanded wraps a LayoutBuilder so we can overlay the 4:3 frame
+              // indicator at the correct position regardless of internal stack layout.
+              Expanded(
+                child: LayoutBuilder(builder: (_, cns) {
+                  final W = cns.maxWidth;
+                  final H = cns.maxHeight;
+                  final bar = ((H - W * 4 / 3) / 2).clamp(0.0, H);
+                  const dim = Color(0xDD000000); // 87% — clearly visible
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      previewStack,
+                      if (bar >= 4) ...[
+                        // Top dim strip
+                        Positioned(top: 0, left: 0, right: 0, height: bar,
+                            child: Container(color: dim)),
+                        // Bottom dim strip
+                        Positioned(bottom: 0, left: 0, right: 0, height: bar,
+                            child: Container(color: dim)),
+                        // Bright frame boundary lines at the 4:3 edge
+                        Positioned.fill(
+                          child: IgnorePointer(
+                            child: CustomPaint(
+                              painter: _FrameLinePainter(topBar: bar),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  );
+                }),
+              ),
               displayBarWidget,
               bottomBarWidget,
               SizedBox(height: MediaQuery.of(context).padding.bottom),
@@ -1807,37 +1882,7 @@ class _GearBtn extends StatelessWidget {
   }
 }
 
-// ── Portrait frame boundary overlay ──────────────────────────────────────────
-// Dims the strips above/below the 3:4 active capture zone, matching the
-// iPhone native camera "view outside the frame" behaviour.
-class _PortraitFrameOverlay extends StatelessWidget {
-  const _PortraitFrameOverlay();
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: LayoutBuilder(builder: (context, constraints) {
-        final W = constraints.maxWidth;
-        final H = constraints.maxHeight;
-        final activeH = W * 4 / 3;
-        if (activeH >= H) return const SizedBox.shrink();
-        final bar = (H - activeH) / 2;
-        const dim = Color(0xAA000000);
-        return Stack(children: [
-          Positioned(top: 0, left: 0, right: 0, height: bar,
-              child: Container(color: dim)),
-          Positioned(bottom: 0, left: 0, right: 0, height: bar,
-              child: Container(color: dim)),
-          CustomPaint(
-            size: Size(W, H),
-            painter: _FrameLinePainter(topBar: bar),
-          ),
-        ]);
-      }),
-    );
-  }
-}
-
+// ── Portrait frame boundary line painter ─────────────────────────────────────
 class _FrameLinePainter extends CustomPainter {
   const _FrameLinePainter({required this.topBar});
   final double topBar;
@@ -1845,8 +1890,8 @@ class _FrameLinePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.35)
-      ..strokeWidth = 0.5;
+      ..color = Colors.white.withValues(alpha: 0.75)
+      ..strokeWidth = 1.5;
     canvas.drawLine(Offset(0, topBar), Offset(size.width, topBar), paint);
     canvas.drawLine(
         Offset(0, size.height - topBar),
@@ -2020,4 +2065,45 @@ class _GridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GridPainter old) => false;
+}
+
+// ── Fullscreen photo viewer ────────────────────────────────────────────────────
+class _PhotoViewPage extends StatelessWidget {
+  const _PhotoViewPage({required this.path});
+  final String path;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          Center(
+            child: InteractiveViewer(
+              minScale: 0.5,
+              maxScale: 8,
+              child: Image.file(File(path), fit: BoxFit.contain),
+            ),
+          ),
+          Positioned(
+            top: 0, left: 0, right: 0,
+            child: SafeArea(
+              child: Row(
+                children: [
+                  GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      child: const Icon(Icons.arrow_back_ios,
+                          color: Colors.white, size: 22),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
