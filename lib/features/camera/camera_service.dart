@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'package:camera/camera.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,7 +18,11 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
     initialize();
   }
   CameraController? _controller;
-  ResolutionPreset _preset = ResolutionPreset.veryHigh;
+  // iOS: always use max (AVCaptureSessionPresetPhoto = full 4:3 sensor, ~12MP).
+  // veryHigh on iOS maps to AVCaptureSessionPreset1920x1080 which crops the
+  // sensor to 16:9, giving a narrower portrait FOV than the native camera app.
+  ResolutionPreset _preset =
+      Platform.isIOS ? ResolutionPreset.max : ResolutionPreset.veryHigh;
 
   Future<void> initialize() async {
     try {
@@ -73,7 +78,7 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
   }
 
   Future<void> setQuality(CaptureQuality quality) async {
-    _preset = quality == CaptureQuality.high
+    _preset = (Platform.isIOS || quality == CaptureQuality.high)
         ? ResolutionPreset.max
         : ResolutionPreset.veryHigh;
     final camera = _controller?.description;
