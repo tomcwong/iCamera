@@ -135,6 +135,48 @@ Map<String, dynamic> _downsample(Map<String, dynamic> args) {
   };
 }
 
+// ── JPEG EXIF helpers ─────────────────────────────────────────────────────────
+// Extract the APP1 (EXIF) segment from a JPEG byte buffer.
+// Returns the raw bytes including the FF E1 marker and length prefix.
+Uint8List? _extractApp1Exif(Uint8List jpeg) {
+  int i = 2; // skip SOI marker FF D8
+  while (i + 3 < jpeg.length) {
+    if (jpeg[i] != 0xFF) break;
+    final marker = jpeg[i + 1];
+    final segLen = (jpeg[i + 2] << 8) | jpeg[i + 3];
+    if (marker == 0xE1 &&
+        i + 9 < jpeg.length &&
+        jpeg[i + 4] == 0x45 && jpeg[i + 5] == 0x78 && // 'Ex'
+        jpeg[i + 6] == 0x69 && jpeg[i + 7] == 0x66 && // 'if'
+        jpeg[i + 8] == 0x00 && jpeg[i + 9] == 0x00) {  // \0\0
+      return jpeg.sublist(i, i + 2 + segLen);
+    }
+    if (marker == 0xDA) break; // start-of-scan: no more headers
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+// Inject an APP1 segment into a JPEG, replacing any existing APP0/APP1.
+Uint8List _injectApp1Exif(Uint8List jpeg, Uint8List app1) {
+  final out = BytesBuilder();
+  out.add(const [0xFF, 0xD8]); // SOI
+  out.add(app1);               // inject EXIF right after SOI
+  int i = 2;
+  while (i + 1 < jpeg.length) {
+    if (jpeg[i] != 0xFF) { out.add(jpeg.sublist(i)); break; }
+    final marker = jpeg[i + 1];
+    if (marker == 0xDA) { out.add(jpeg.sublist(i)); break; } // SOS + image data
+    if (i + 3 >= jpeg.length) break;
+    final segLen = (jpeg[i + 2] << 8) | jpeg[i + 3];
+    // Skip APP0 (JFIF) and APP1 (old EXIF) — they are replaced by our injected one
+    if (marker == 0xE0 || marker == 0xE1) { i += 2 + segLen; continue; }
+    out.add(jpeg.sublist(i, i + 2 + segLen));
+    i += 2 + segLen;
+  }
+  return out.toBytes();
+}
+
 // ── Main screen ───────────────────────────────────────────────────────────────
 class CameraScreen extends ConsumerStatefulWidget {
   const CameraScreen({super.key});
@@ -348,62 +390,32 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         'height': height,
       });
 
-      final path = await DngWriter.instance.saveProcessedJpeg(jpegBytes);
-      // Copy camera EXIF from original capture, add GPS + iCamera overrides.
-      await _writeExifMetadata(xfile.path, path, settings, _lastGpsPosition);
+      // Preserve original camera EXIF (real ISO/SS/FL) via pure-Dart APP1 injection.
+      final app1 = _extractApp1Exif(rawBytes);
+      final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
+      final path = await DngWriter.instance.saveProcessedJpeg(finalJpeg);
+      // Best-effort GPS addition via native_exif.
+      await _addGpsExif(path, _lastGpsPosition);
       if (mounted) setState(() => _lastCapturePath = path);
     } catch (_) {}
   }
 
-  /// Copies the original capture's EXIF (real ISO/SS/EV set by the camera sensor),
-  /// overrides Make/Model/Lens/FocalLength for iCamera branding, and adds GPS.
-  Future<void> _writeExifMetadata(
-    String sourcePath,
-    String destPath,
-    CaptureSettings settings,
-    Position? gps,
-  ) async {
+  Future<void> _addGpsExif(String path, Position? gps) async {
+    if (gps == null) return;
     try {
-      // Read real exposure values from the original captured JPEG.
-      final srcExif = await Exif.fromPath(sourcePath);
-      final original = await srcExif.getAttributes() ?? {};
-      await srcExif.close();
-
-      // Start with real camera values (ISO, ExposureTime, FNumber, EV, etc.)
-      final attrs = Map<String, String>.from(original);
-
-      // iCamera identity
-      attrs['Make'] = 'iCamera';
-      attrs['Model'] = 'iCamera';
-      attrs['LensModel'] = settings.selectedLens.displayName;
-      final fmm = settings.selectedLens.focalLengthMm.toString();
-      attrs['FocalLength'] = fmm;
-      attrs['FocalLengthIn35mmFilm'] = fmm;
-      attrs['FocalLenIn35mmFilm'] = fmm; // iOS key variant
-
-      // In PRO / Aperture mode override with the user-chosen values.
-      if (settings.mode != CaptureMode.auto) {
-        attrs['ISOSpeedRatings'] = '${settings.iso}';
-        attrs['ExposureTime'] =
-            (1.0 / settings.shutterSpeedDenominator).toStringAsFixed(8);
-        attrs['FNumber'] = settings.aperture.toStringAsFixed(2);
+      final attrs = <String, String>{
+        'GPSLatitude': gps.latitude.abs().toStringAsFixed(7),
+        'GPSLatitudeRef': gps.latitude >= 0 ? 'N' : 'S',
+        'GPSLongitude': gps.longitude.abs().toStringAsFixed(7),
+        'GPSLongitudeRef': gps.longitude >= 0 ? 'E' : 'W',
+      };
+      if (gps.altitude != 0) {
+        attrs['GPSAltitude'] = gps.altitude.abs().toStringAsFixed(1);
+        attrs['GPSAltitudeRef'] = gps.altitude >= 0 ? '0' : '1';
       }
-
-      // GPS
-      if (gps != null) {
-        attrs['GPSLatitude'] = gps.latitude.abs().toStringAsFixed(7);
-        attrs['GPSLatitudeRef'] = gps.latitude >= 0 ? 'N' : 'S';
-        attrs['GPSLongitude'] = gps.longitude.abs().toStringAsFixed(7);
-        attrs['GPSLongitudeRef'] = gps.longitude >= 0 ? 'E' : 'W';
-        if (gps.altitude != 0) {
-          attrs['GPSAltitude'] = gps.altitude.abs().toStringAsFixed(1);
-          attrs['GPSAltitudeRef'] = gps.altitude >= 0 ? '0' : '1';
-        }
-      }
-
-      final destExif = await Exif.fromPath(destPath);
-      await destExif.writeAttributes(attrs);
-      await destExif.close();
+      final exif = await Exif.fromPath(path);
+      await exif.writeAttributes(attrs);
+      await exif.close();
     } catch (_) {}
   }
 
@@ -890,13 +902,8 @@ class _TopHud extends StatelessWidget {
         ? '1/$liveShutterDenom'
         : settings.shutterSpeedLabel;
 
-    // Second row of left panel: EV (AUTO, live) or APT (PRO/Aperture)
-    final aptLabel = isAuto ? 'EV' : 'APT';
-    final aptStr = isAuto
-        ? (liveEv >= 0
-            ? '+${liveEv.toStringAsFixed(1)}'
-            : liveEv.toStringAsFixed(1))
-        : settings.apertureLabel;
+    const aptLabel = 'APT';
+    final aptStr = settings.apertureLabel;
 
     // ISO: live in AUTO, manual in PRO
     final isoStr = (isAuto && liveIso > 0) ? '$liveIso' : settings.isoLabel;
@@ -1815,7 +1822,7 @@ class _PortraitFrameOverlay extends StatelessWidget {
         final activeH = W * 4 / 3;
         if (activeH >= H) return const SizedBox.shrink();
         final bar = (H - activeH) / 2;
-        const dim = Color(0x66000000);
+        const dim = Color(0xAA000000);
         return Stack(children: [
           Positioned(top: 0, left: 0, right: 0, height: bar,
               child: Container(color: dim)),
