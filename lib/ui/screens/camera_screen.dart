@@ -305,6 +305,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     // 16:9 selection shows a crop overlay; the final image is cropped on capture.
     final previewAspect = isLandscape ? 4.0 / 3.0 : 3.0 / 4.0;
 
+    final activeController = cameraState.valueOrNull;
+
     Widget previewWidget = cameraState.when(
       data: (ctrl) => ctrl != null && ctrl.value.isInitialized
           ? _CameraPreview(controller: ctrl, settings: settings)
@@ -371,7 +373,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         children: [
           previewWidget,
           if (settings.aspectRatio == CaptureAspectRatio.aspect16_9)
-            _AspectCropOverlay(isLandscape: isLandscape),
+            _AspectCropOverlay(isLandscape: isLandscape, controller: activeController),
           if (_showGrid) const _GridOverlay(),
           if (_timerCountdown > 0)
             Center(
@@ -581,8 +583,36 @@ class _CameraPreview extends StatelessWidget {
 // ── Aspect ratio crop overlay ─────────────────────────────────────────────────
 // Dims the area outside the selected crop (shown when 16:9 is active).
 class _AspectCropOverlay extends StatelessWidget {
-  const _AspectCropOverlay({required this.isLandscape});
+  const _AspectCropOverlay({required this.isLandscape, this.controller});
   final bool isLandscape;
+  final CameraController? controller;
+
+  // Compute left/right bar width as a fraction of preview box width.
+  //
+  // On iOS with ResolutionPreset.max the live preview stream is typically 9:16
+  // (a centre crop of the 4:3 sensor), even though the still capture is full 4:3.
+  // The 9:16 final crop of the 4:3 capture has exactly the same horizontal extent
+  // as the 9:16 preview stream, so the bars should be 0. On Android (4:3 stream)
+  // the bars fall back to the classic W/8 calculation.
+  double _portraitBarFraction() {
+    final previewSize = controller?.value.previewSize;
+    if (previewSize == null || previewSize.width == 0 || previewSize.height == 0) {
+      // No controller yet — assume preview = full 4:3 capture.
+      return 0.125;
+    }
+    // previewSize may be in landscape (width > height) or portrait orientation.
+    // Normalise to portrait aspect = short / long.
+    final pw = previewSize.width, ph = previewSize.height;
+    final streamPortraitAspect = pw > ph ? ph / pw : pw / ph;
+    const boxPortraitAspect = 3.0 / 4.0;   // preview box is always 3:4
+    // streamFraction: fraction of the 4:3 capture width visible in the preview.
+    final streamFraction = (streamPortraitAspect / boxPortraitAspect).clamp(0.0, 1.0);
+    // barFraction = 0.5 * (streamFraction - cropFraction)
+    //   cropFraction = (9/16)/(3/4) = 3/4 = 0.75
+    //   When stream is 9:16 → streamFraction=0.75 → barFraction=0  (no bars)
+    //   When stream is 3:4  → streamFraction=1.0  → barFraction=0.125 (W/8)
+    return (streamFraction / 2.0 - 3.0 / 8.0).clamp(0.0, 0.5);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -592,7 +622,7 @@ class _AspectCropOverlay extends StatelessWidget {
       const dim = Color(0xAA000000);
 
       // Landscape preview is 4:3; 16:9 crop removes top/bottom.
-      // Portrait preview is 3:4; 9:16 crop removes left/right.
+      // Portrait preview is 3:4; 9:16 crop removes left/right (adjusted for stream AR).
       double left = 0, top = 0, right = 0, bottom = 0;
       if (isLandscape) {
         final cropH = W * 9 / 16;
@@ -600,8 +630,7 @@ class _AspectCropOverlay extends StatelessWidget {
         top = bar;
         bottom = bar;
       } else {
-        final cropW = H * 9 / 16;
-        final bar = ((W - cropW) / 2).clamp(0.0, W);
+        final bar = (W * _portraitBarFraction()).clamp(0.0, W);
         left = bar;
         right = bar;
       }

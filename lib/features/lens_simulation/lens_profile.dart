@@ -46,9 +46,9 @@ extension LensProfileInfo on LensProfile {
 
   /// Vignetting strength at max aperture (0=none, 1=full black corners)
   double get vignetteStrength => switch (this) {
-        LensProfile.noctilux50 => 0.88,
-        LensProfile.summilux35 => 0.62,
-        LensProfile.summilux28 => 0.42,
+        LensProfile.noctilux50 => 0.55,
+        LensProfile.summilux35 => 0.35,
+        LensProfile.summilux28 => 0.20,
       };
 
   /// Subtle color tint applied to the live preview to distinguish lenses visually.
