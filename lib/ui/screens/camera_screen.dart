@@ -411,6 +411,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         fit: StackFit.expand,
         children: [
           previewWidget,
+          if (!isLandscape) const _PortraitFrameOverlay(),
           if (settings.aspectRatio == CaptureAspectRatio.aspect16_9)
             _AspectCropOverlay(isLandscape: isLandscape, controller: activeController),
           if (_showGrid) const _GridOverlay(),
@@ -508,7 +509,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       );
     }
 
-    // ── Portrait: Column layout, bottom bar pinned to screen bottom ─
+    // ── Portrait: Column layout, preview fills all space between bars ─
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -520,12 +521,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                 bottom: false,
                 child: topHudWidget,
               ),
-              AspectRatio(
-                aspectRatio: previewAspect,
-                child: previewStack,
-              ),
+              Expanded(child: previewStack),
               displayBarWidget,
-              const Spacer(),
               bottomBarWidget,
               SizedBox(height: MediaQuery.of(context).padding.bottom),
             ],
@@ -1674,6 +1671,57 @@ class _GearBtn extends StatelessWidget {
       ),
     );
   }
+}
+
+// ── Portrait frame boundary overlay ──────────────────────────────────────────
+// Dims the strips above/below the 3:4 active capture zone, matching the
+// iPhone native camera "view outside the frame" behaviour.
+class _PortraitFrameOverlay extends StatelessWidget {
+  const _PortraitFrameOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: LayoutBuilder(builder: (context, constraints) {
+        final W = constraints.maxWidth;
+        final H = constraints.maxHeight;
+        final activeH = W * 4 / 3;
+        if (activeH >= H) return const SizedBox.shrink();
+        final bar = (H - activeH) / 2;
+        const dim = Color(0x66000000);
+        return Stack(children: [
+          Positioned(top: 0, left: 0, right: 0, height: bar,
+              child: Container(color: dim)),
+          Positioned(bottom: 0, left: 0, right: 0, height: bar,
+              child: Container(color: dim)),
+          CustomPaint(
+            size: Size(W, H),
+            painter: _FrameLinePainter(topBar: bar),
+          ),
+        ]);
+      }),
+    );
+  }
+}
+
+class _FrameLinePainter extends CustomPainter {
+  const _FrameLinePainter({required this.topBar});
+  final double topBar;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.35)
+      ..strokeWidth = 0.5;
+    canvas.drawLine(Offset(0, topBar), Offset(size.width, topBar), paint);
+    canvas.drawLine(
+        Offset(0, size.height - topBar),
+        Offset(size.width, size.height - topBar),
+        paint);
+  }
+
+  @override
+  bool shouldRepaint(_FrameLinePainter old) => old.topBar != topBar;
 }
 
 // ── Overlays ──────────────────────────────────────────────────────────────────
