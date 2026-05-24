@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:camera/camera.dart';
@@ -102,6 +103,33 @@ Map<String, dynamic> _cropToAspect(Map<String, dynamic> args) {
         Uint8List.fromList(cropped.getBytes(order: img.ChannelOrder.rgba)),
     'width': cropW,
     'height': cropH,
+  };
+}
+
+// Downsamples RGBA to a maximum pixel count. Returns unchanged if already small enough.
+// Runs in a compute isolate to avoid blocking the UI thread.
+Map<String, dynamic> _downsample(Map<String, dynamic> args) {
+  final rgba = args['rgba'] as Uint8List;
+  final width = args['width'] as int;
+  final height = args['height'] as int;
+  final maxPixels = args['maxPixels'] as int;
+
+  if (width * height <= maxPixels) {
+    return {'rgba': rgba, 'width': width, 'height': height};
+  }
+  final scale = math.sqrt(maxPixels / (width * height));
+  final newW = (width * scale).round().clamp(1, width);
+  final newH = (height * scale).round().clamp(1, height);
+  final src = img.Image.fromBytes(
+    width: width, height: height,
+    bytes: rgba.buffer, order: img.ChannelOrder.rgba, numChannels: 4,
+  );
+  final scaled = img.copyResize(src, width: newW, height: newH,
+      interpolation: img.Interpolation.linear);
+  return {
+    'rgba': Uint8List.fromList(scaled.getBytes(order: img.ChannelOrder.rgba)),
+    'width': newW,
+    'height': newH,
   };
 }
 
@@ -231,6 +259,17 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
           'targetAspect': targetAspect,
         });
       }
+
+      // Downsample to max 6 MP before the heavy processing pipeline.
+      // 12 MP (max preset) → 6 MP cuts processing time ~2× with no visible quality
+      // loss on any display. Runs in an isolate so the UI stays responsive.
+      const _maxProcessingPixels = 6 * 1024 * 1024;
+      decodeResult = await compute(_downsample, {
+        'rgba': decodeResult['rgba'],
+        'width': decodeResult['width'],
+        'height': decodeResult['height'],
+        'maxPixels': _maxProcessingPixels,
+      });
 
       final rgba = decodeResult['rgba'] as Uint8List;
       final width = decodeResult['width'] as int;
