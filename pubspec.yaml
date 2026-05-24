@@ -40,6 +40,12 @@ dependencies:
   flutter_svg: ^2.0.10+1
   cached_network_image: ^3.4.1
 
+  # --- Location (for GPS EXIF) ---
+  geolocator: ^14.0.2
+
+  # --- EXIF read/write ---
+  native_exif: ^0.8.0
+
   # --- Device info ---
   device_info_plus: ^11.2.0
 

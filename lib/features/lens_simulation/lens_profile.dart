@@ -83,6 +83,14 @@ extension LensProfileInfo on LensProfile {
         LensProfile.noctilux50 => 1.8,
       };
 
+  /// 35mm-equivalent focal length written into EXIF.
+  /// summilux28 uses defaultZoom=1.0 which on iPhone 13/14/15 equals 26mm.
+  int get focalLengthMm => switch (this) {
+        LensProfile.summilux28 => 26,
+        LensProfile.summilux35 => 35,
+        LensProfile.noctilux50 => 50,
+      };
+
   Color get uiColor => switch (this) {
         LensProfile.noctilux50 => const Color(0xFFD4A853),
         LensProfile.summilux28 => const Color(0xFF7ABFCC),

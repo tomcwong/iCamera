@@ -12,6 +12,8 @@
 	<!-- Privacy usage descriptions (required by App Store) -->
 	<key>NSCameraUsageDescription</key>
 	<string>iCamera needs camera access to capture photos.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>iCamera adds your location to photo metadata so your shots are organised on the map.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>iCamera needs photo library access to save your captures.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

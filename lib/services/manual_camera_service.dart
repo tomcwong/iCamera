@@ -46,6 +46,20 @@ class ManualCameraService {
     } catch (_) {}
   }
 
+  /// Returns the camera's current live exposure values (ISO, shutter, EV).
+  /// On iOS reads directly from AVCaptureDevice — works in both AUTO and PRO mode.
+  /// Returns null if unavailable.
+  Future<Map<String, dynamic>?> getLiveExposure() async {
+    if (!isSupported) return null;
+    try {
+      final raw = await _ch.invokeMethod<Map>('getLiveExposure');
+      if (raw == null) return null;
+      return Map<String, dynamic>.from(raw);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Open the device's system gallery app.
   Future<void> openGallery() async {
     if (!isSupported) return;

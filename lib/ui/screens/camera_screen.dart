@@ -7,7 +7,9 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:image/image.dart' as img;
+import 'package:native_exif/native_exif.dart';
 import '../../core/theme/leica_colors.dart';
 import '../../features/bokeh/segmentation_service.dart';
 import '../../features/camera/camera_service.dart';
@@ -156,18 +158,68 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   int _timerCountdown = 0;
   bool _showGrid = false;
 
+  // Live exposure readout (AUTO mode)
+  int _liveIso = 0;
+  int _liveShutterDenom = 0;
+  double _liveEv = 0;
+  Timer? _liveExposureTimer;
+
+  // GPS for EXIF
+  Position? _lastGpsPosition;
+  StreamSubscription<Position>? _gpsSub;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     ref.read(lutPreloadProvider);
+    _startLiveExposurePoll();
+    _initGps();
   }
 
   @override
   void dispose() {
     _zoomHideTimer?.cancel();
+    _liveExposureTimer?.cancel();
+    _gpsSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  void _startLiveExposurePoll() {
+    _liveExposureTimer = Timer.periodic(const Duration(milliseconds: 600), (_) async {
+      final settings = ref.read(captureSettingsProvider);
+      if (settings.mode != CaptureMode.auto) return;
+      final live = await ManualCameraService.instance.getLiveExposure();
+      if (live != null && mounted) {
+        setState(() {
+          _liveIso = (live['iso'] as num?)?.toInt() ?? 0;
+          _liveShutterDenom = (live['shutterDenom'] as num?)?.toInt() ?? 0;
+          _liveEv = (live['ev'] as num?)?.toDouble() ?? 0;
+        });
+      }
+    });
+  }
+
+  Future<void> _initGps() async {
+    try {
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) { return; }
+      if (!await Geolocator.isLocationServiceEnabled()) { return; }
+      _lastGpsPosition = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
+      );
+      _gpsSub = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          distanceFilter: 50,
+        ),
+      ).listen((p) => _lastGpsPosition = p, onError: (_) {});
+    } catch (_) {}
   }
 
   Future<void> _setZoom(double zoom) async {
@@ -263,12 +315,12 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       // Downsample to max 6 MP before the heavy processing pipeline.
       // 12 MP (max preset) → 6 MP cuts processing time ~2× with no visible quality
       // loss on any display. Runs in an isolate so the UI stays responsive.
-      const _maxProcessingPixels = 6 * 1024 * 1024;
+      const maxProcessingPixels = 6 * 1024 * 1024;
       decodeResult = await compute(_downsample, {
         'rgba': decodeResult['rgba'],
         'width': decodeResult['width'],
         'height': decodeResult['height'],
-        'maxPixels': _maxProcessingPixels,
+        'maxPixels': maxProcessingPixels,
       });
 
       final rgba = decodeResult['rgba'] as Uint8List;
@@ -297,7 +349,61 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       });
 
       final path = await DngWriter.instance.saveProcessedJpeg(jpegBytes);
+      // Copy camera EXIF from original capture, add GPS + iCamera overrides.
+      await _writeExifMetadata(xfile.path, path, settings, _lastGpsPosition);
       if (mounted) setState(() => _lastCapturePath = path);
+    } catch (_) {}
+  }
+
+  /// Copies the original capture's EXIF (real ISO/SS/EV set by the camera sensor),
+  /// overrides Make/Model/Lens/FocalLength for iCamera branding, and adds GPS.
+  Future<void> _writeExifMetadata(
+    String sourcePath,
+    String destPath,
+    CaptureSettings settings,
+    Position? gps,
+  ) async {
+    try {
+      // Read real exposure values from the original captured JPEG.
+      final srcExif = await Exif.fromPath(sourcePath);
+      final original = await srcExif.getAttributes() ?? {};
+      await srcExif.close();
+
+      // Start with real camera values (ISO, ExposureTime, FNumber, EV, etc.)
+      final attrs = Map<String, String>.from(original);
+
+      // iCamera identity
+      attrs['Make'] = 'iCamera';
+      attrs['Model'] = 'iCamera';
+      attrs['LensModel'] = settings.selectedLens.displayName;
+      final fmm = settings.selectedLens.focalLengthMm.toString();
+      attrs['FocalLength'] = fmm;
+      attrs['FocalLengthIn35mmFilm'] = fmm;
+      attrs['FocalLenIn35mmFilm'] = fmm; // iOS key variant
+
+      // In PRO / Aperture mode override with the user-chosen values.
+      if (settings.mode != CaptureMode.auto) {
+        attrs['ISOSpeedRatings'] = '${settings.iso}';
+        attrs['ExposureTime'] =
+            (1.0 / settings.shutterSpeedDenominator).toStringAsFixed(8);
+        attrs['FNumber'] = settings.aperture.toStringAsFixed(2);
+      }
+
+      // GPS
+      if (gps != null) {
+        attrs['GPSLatitude'] = gps.latitude.abs().toStringAsFixed(7);
+        attrs['GPSLatitudeRef'] = gps.latitude >= 0 ? 'N' : 'S';
+        attrs['GPSLongitude'] = gps.longitude.abs().toStringAsFixed(7);
+        attrs['GPSLongitudeRef'] = gps.longitude >= 0 ? 'E' : 'W';
+        if (gps.altitude != 0) {
+          attrs['GPSAltitude'] = gps.altitude.abs().toStringAsFixed(1);
+          attrs['GPSAltitudeRef'] = gps.altitude >= 0 ? '0' : '1';
+        }
+      }
+
+      final destExif = await Exif.fromPath(destPath);
+      await destExif.writeAttributes(attrs);
+      await destExif.close();
     } catch (_) {}
   }
 
@@ -383,6 +489,9 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       settings: settings,
       activePanel: _activeTopPanel,
       onPanelTap: _toggleTopPanel,
+      liveIso: _liveIso,
+      liveShutterDenom: _liveShutterDenom,
+      liveEv: _liveEv,
     );
 
     final gearOverlay = _showGearPanel
@@ -755,32 +864,50 @@ class _CropBracketPainter extends CustomPainter {
 }
 
 // ── Top HUD ───────────────────────────────────────────────────────────────────
-// New order: SS/APT | iCamera | WB | ISO
 class _TopHud extends StatelessWidget {
   const _TopHud({
     required this.settings,
     required this.activePanel,
     required this.onPanelTap,
+    this.liveIso = 0,
+    this.liveShutterDenom = 0,
+    this.liveEv = 0,
   });
 
   final CaptureSettings settings;
   final _TopPanel? activePanel;
   final void Function(_TopPanel) onPanelTap;
+  final int liveIso;
+  final int liveShutterDenom;
+  final double liveEv;
 
   @override
   Widget build(BuildContext context) {
+    final isAuto = settings.mode == CaptureMode.auto;
+
+    // SS: show live value in AUTO mode when available
+    final ssStr = (isAuto && liveShutterDenom > 0)
+        ? '1/$liveShutterDenom'
+        : settings.shutterSpeedLabel;
+
+    // Second row of left panel: EV (AUTO, live) or APT (PRO/Aperture)
+    final aptLabel = isAuto ? 'EV' : 'APT';
+    final aptStr = isAuto
+        ? (liveEv >= 0
+            ? '+${liveEv.toStringAsFixed(1)}'
+            : liveEv.toStringAsFixed(1))
+        : settings.apertureLabel;
+
+    // ISO: live in AUTO, manual in PRO
+    final isoStr = (isAuto && liveIso > 0) ? '$liveIso' : settings.isoLabel;
+
     return Container(
       color: Colors.black,
-      padding: EdgeInsets.only(
-        top: 8,
-        left: 12,
-        right: 12,
-        bottom: 8,
-      ),
+      padding: const EdgeInsets.only(top: 8, left: 12, right: 12, bottom: 8),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // SS / APT — two sub-columns, each label centred over its value
+          // SS / APT (or SS / EV in AUTO)
           _HudTap(
             active: activePanel == _TopPanel.ssApt,
             onTap: () => onPanelTap(_TopPanel.ssApt),
@@ -797,7 +924,7 @@ class _TopHud extends StatelessWidget {
                             fontSize: 7,
                             letterSpacing: 1.5)),
                     const SizedBox(height: 2),
-                    Text(settings.shutterSpeedLabel,
+                    Text(ssStr,
                         style: const TextStyle(
                             color: LeicaColors.textPrimary,
                             fontSize: 13,
@@ -809,13 +936,13 @@ class _TopHud extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    const Text('APT',
-                        style: TextStyle(
+                    Text(aptLabel,
+                        style: const TextStyle(
                             color: LeicaColors.textDisabled,
                             fontSize: 7,
                             letterSpacing: 1.5)),
                     const SizedBox(height: 2),
-                    Text(settings.apertureLabel,
+                    Text(aptStr,
                         style: const TextStyle(
                             color: LeicaColors.textPrimary,
                             fontSize: 13,
@@ -897,7 +1024,7 @@ class _TopHud extends StatelessWidget {
                         fontSize: 7,
                         letterSpacing: 1.5)),
                 const SizedBox(height: 2),
-                Text(settings.isoLabel,
+                Text(isoStr,
                     style: const TextStyle(
                         color: LeicaColors.textPrimary,
                         fontSize: 13,
