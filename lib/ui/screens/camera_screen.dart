@@ -573,15 +573,17 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       }),
     );
 
-    final displayBarWidget = _DisplayBar(
-      panel: _activeTopPanel ?? _TopPanel.looks,
-      settings: settings,
-      onSettingsChanged: _updateSettings,
-      onWbChanged: (k) =>
-          _updateSettings((s) => s.copyWith(whiteBalanceKelvin: k)),
-      showGrid: _showGrid,
-      onGridToggle: () => setState(() => _showGrid = !_showGrid),
-    );
+    final displayBarWidget = _activeTopPanel != null
+        ? _DisplayBar(
+            panel: _activeTopPanel!,
+            settings: settings,
+            onSettingsChanged: _updateSettings,
+            onWbChanged: (k) =>
+                _updateSettings((s) => s.copyWith(whiteBalanceKelvin: k)),
+            showGrid: _showGrid,
+            onGridToggle: () => setState(() => _showGrid = !_showGrid),
+          )
+        : const SizedBox.shrink();
 
     final topHudWidget = _TopHud(
       settings: settings,

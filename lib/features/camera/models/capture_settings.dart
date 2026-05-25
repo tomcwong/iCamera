@@ -25,7 +25,7 @@ class CaptureSettings {
     this.quality = CaptureQuality.standard,
     this.aspectRatio = CaptureAspectRatio.aspect4_3,
     this.timerSeconds = 0,
-    this.leicaLookEnabled = true,
+    this.leicaLookEnabled = false,
   });
 
   final CaptureMode mode;
