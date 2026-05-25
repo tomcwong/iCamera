@@ -228,6 +228,12 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   bool _zoomIndicatorVisible = false;
   Timer? _zoomHideTimer;
 
+  // Tap-to-focus
+  Offset? _focusIndicatorPos;
+  bool _focusVisible = false;
+  Timer? _focusHideTimer;
+  Size _previewRenderSize = Size.zero;
+
   // UI state
   _TopPanel? _activeTopPanel;
   bool _showGearPanel = false;
@@ -244,6 +250,9 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   Position? _lastGpsPosition;
   StreamSubscription<Position>? _gpsSub;
 
+  // Available optical zoom levels (detected from hardware on iOS)
+  List<double> _availableZooms = [1.0];
+
   @override
   void initState() {
     super.initState();
@@ -251,11 +260,18 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     ref.read(lutPreloadProvider);
     _startLiveExposurePoll();
     _initGps();
+    _loadAvailableZooms();
+  }
+
+  Future<void> _loadAvailableZooms() async {
+    final zooms = await ManualCameraService.instance.getAvailableZoomFactors();
+    if (mounted) setState(() => _availableZooms = zooms);
   }
 
   @override
   void dispose() {
     _zoomHideTimer?.cancel();
+    _focusHideTimer?.cancel();
     _liveExposureTimer?.cancel();
     _gpsSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -309,6 +325,31 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     _zoomHideTimer?.cancel();
     _zoomHideTimer = Timer(const Duration(seconds: 2), () {
       if (mounted) setState(() => _zoomIndicatorVisible = false);
+    });
+  }
+
+  Future<void> _tapToFocus(Offset localPos) async {
+    final ctrl = ref.read(cameraControllerProvider).value;
+    if (ctrl == null || !ctrl.value.isInitialized) return;
+    final settings = ref.read(captureSettingsProvider);
+    if (settings.mode == CaptureMode.manual) return;
+    final size = _previewRenderSize;
+    if (size == Size.zero) return;
+    final nx = (localPos.dx / size.width).clamp(0.0, 1.0);
+    final ny = (localPos.dy / size.height).clamp(0.0, 1.0);
+    try {
+      await ctrl.setFocusMode(FocusMode.auto);
+      await ctrl.setFocusPoint(Offset(nx, ny));
+      await ctrl.setExposureMode(ExposureMode.auto);
+      await ctrl.setExposurePoint(Offset(nx, ny));
+    } catch (_) {}
+    setState(() {
+      _focusIndicatorPos = localPos;
+      _focusVisible = true;
+    });
+    _focusHideTimer?.cancel();
+    _focusHideTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _focusVisible = false);
     });
   }
 
@@ -533,7 +574,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     );
 
     final displayBarWidget = _DisplayBar(
-      panel: _activeTopPanel ?? _TopPanel.lens,
+      panel: _activeTopPanel ?? _TopPanel.looks,
       settings: settings,
       onSettingsChanged: _updateSettings,
       onWbChanged: (k) =>
@@ -573,51 +614,72 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
           _setZoom((_baseZoom * d.scale).clamp(1.0, 10.0));
         }
       },
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          previewWidget,
-          if (settings.aspectRatio == CaptureAspectRatio.aspect16_9)
-            _AspectCropOverlay(isLandscape: isLandscape, controller: activeController),
-          if (_showGrid) const _GridOverlay(),
-          if (_timerCountdown > 0)
-            Center(
-              child: Text(
-                '$_timerCountdown',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 96,
-                  fontWeight: FontWeight.w200,
-                  shadows: [Shadow(color: Colors.black54, blurRadius: 24)],
-                ),
-              ),
-            ),
-          if (_zoomIndicatorVisible)
-            Positioned(
-              bottom: 12,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
+      onTapUp: (d) => _tapToFocus(d.localPosition),
+      child: LayoutBuilder(
+        builder: (_, cns) {
+          _previewRenderSize = cns.biggest;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              previewWidget,
+              if (settings.aspectRatio == CaptureAspectRatio.aspect16_9)
+                _AspectCropOverlay(isLandscape: isLandscape, controller: activeController),
+              if (_showGrid) const _GridOverlay(),
+              if (_timerCountdown > 0)
+                Center(
                   child: Text(
-                    '${_currentZoom.toStringAsFixed(1)}×',
+                    '$_timerCountdown',
                     style: const TextStyle(
                       color: Colors.white,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.5,
+                      fontSize: 96,
+                      fontWeight: FontWeight.w200,
+                      shadows: [Shadow(color: Colors.black54, blurRadius: 24)],
                     ),
                   ),
                 ),
-              ),
-            ),
-        ],
+              if (_zoomIndicatorVisible)
+                Positioned(
+                  bottom: 12,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        '${_currentZoom.toStringAsFixed(1)}×',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              if (_focusVisible && _focusIndicatorPos != null)
+                Positioned(
+                  left: _focusIndicatorPos!.dx - 36,
+                  top: _focusIndicatorPos!.dy - 36,
+                  child: IgnorePointer(
+                    child: Container(
+                      width: 72,
+                      height: 72,
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                            color: const Color(0xFFFFD700), width: 1.5),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
 
@@ -655,6 +717,19 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
               child: Container(
                 color: Colors.black.withValues(alpha: 0.55),
                 child: displayBarWidget,
+              ),
+            ),
+            // Zoom buttons — overlaid above the display bar
+            Positioned(
+              bottom: 124,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: _ZoomButtons(
+                  availableZooms: _availableZooms,
+                  currentZoom: _currentZoom,
+                  onZoom: _setZoom,
+                ),
               ),
             ),
             // Bottom bar overlay
@@ -714,6 +789,19 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                           ),
                         ),
                       ],
+                      // Zoom buttons overlaid at the bottom of the preview area
+                      Positioned(
+                        bottom: math.max(bar, 0.0) + 10,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: _ZoomButtons(
+                            availableZooms: _availableZooms,
+                            currentZoom: _currentZoom,
+                            onZoom: _setZoom,
+                          ),
+                        ),
+                      ),
                     ],
                   );
                 }),
@@ -790,21 +878,20 @@ class _CameraPreview extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
+          // Live preview is always clean — no color grading applied.
+          // WB matrix still applied to show temperature feedback in real-time.
           ColorFiltered(
             colorFilter: ColorFilter.matrix(
-                settings.selectedLook.previewMatrix),
-            child: ColorFiltered(
-              colorFilter: ColorFilter.matrix(
-                  _CameraPreview._wbMatrix(settings.whiteBalanceKelvin)),
-              child: cameraChild,
-            ),
+                _CameraPreview._wbMatrix(settings.whiteBalanceKelvin)),
+            child: cameraChild,
           ),
-          _VignetteOverlay(strength: settings.selectedLens.vignetteStrength),
-          _LensTintOverlay(tint: settings.selectedLens.previewTint),
           Positioned(
             top: 8,
             right: 8,
-            child: _LookBadge(look: settings.selectedLook),
+            child: _LookBadge(
+              look: settings.selectedLook,
+              leicaLookEnabled: settings.leicaLookEnabled,
+            ),
           ),
         ],
       ),
@@ -1035,31 +1122,18 @@ class _TopHud extends StatelessWidget {
             ),
           ),
 
-          // iCamera / lens name — center
+          // iCamera — center; tap to open looks panel
           _HudTap(
-            active: activePanel == _TopPanel.lens,
-            onTap: () => onPanelTap(_TopPanel.lens),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'iCamera',
-                  style: TextStyle(
-                    color: LeicaColors.textPrimary,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w300,
-                    letterSpacing: 4,
-                  ),
-                ),
-                Text(
-                  settings.selectedLens.displayName.toUpperCase(),
-                  style: const TextStyle(
-                    color: LeicaColors.textSecondary,
-                    fontSize: 8,
-                    letterSpacing: 2,
-                  ),
-                ),
-              ],
+            active: activePanel == _TopPanel.looks,
+            onTap: () => onPanelTap(_TopPanel.looks),
+            child: const Text(
+              'iCamera',
+              style: TextStyle(
+                color: LeicaColors.textPrimary,
+                fontSize: 11,
+                fontWeight: FontWeight.w300,
+                letterSpacing: 4,
+              ),
             ),
           ),
 
@@ -1774,13 +1848,12 @@ class _GearPanel extends StatelessWidget {
                         icon: settings.rawEnabled
                             ? Icons.raw_on
                             : Icons.raw_off,
-                        label: 'FILM',
-                        sublabel: settings.rawEnabled ? 'RAW' : 'JPEG',
+                        label: 'RAW',
+                        sublabel: settings.rawEnabled ? 'ON' : 'OFF',
                         active: settings.rawEnabled,
                         onTap: () => onSettingsChanged(
                             (s) => s.copyWith(rawEnabled: !s.rawEnabled)),
                       ),
-                      // Quality toggle
                       _GearBtn(
                         icon: Icons.high_quality_outlined,
                         label: 'QUAL',
@@ -1795,6 +1868,55 @@ class _GearPanel extends StatelessWidget {
                             )),
                       ),
                     ]),
+                    const SizedBox(height: 12),
+                    // Full-width Leica Look / Clean toggle
+                    GestureDetector(
+                      onTap: () => onSettingsChanged(
+                          (s) => s.copyWith(leicaLookEnabled: !s.leicaLookEnabled)),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 150),
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 11, horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: settings.leicaLookEnabled
+                              ? LeicaColors.red.withValues(alpha: 0.15)
+                              : Colors.white.withValues(alpha: 0.05),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: settings.leicaLookEnabled
+                                ? LeicaColors.red.withValues(alpha: 0.5)
+                                : Colors.white24,
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.photo_filter_outlined,
+                              color: settings.leicaLookEnabled
+                                  ? LeicaColors.red
+                                  : Colors.white38,
+                              size: 16,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              settings.leicaLookEnabled
+                                  ? 'LEICA LOOK  ·  ON'
+                                  : 'LEICA LOOK  ·  OFF  (CLEAN OUTPUT)',
+                              style: TextStyle(
+                                color: settings.leicaLookEnabled
+                                    ? LeicaColors.red
+                                    : Colors.white38,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 1.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ],
                 ),
             ),
@@ -1903,64 +2025,90 @@ class _FrameLinePainter extends CustomPainter {
   bool shouldRepaint(_FrameLinePainter old) => old.topBar != topBar;
 }
 
-// ── Overlays ──────────────────────────────────────────────────────────────────
-class _VignetteOverlay extends StatelessWidget {
-  const _VignetteOverlay({required this.strength});
-  final double strength;
+// ── Zoom Buttons ─────────────────────────────────────────────────────────────
+// Native-camera-style 0.5× / 1× / 2× pills overlaid at the bottom of the preview.
+class _ZoomButtons extends StatelessWidget {
+  const _ZoomButtons({
+    required this.availableZooms,
+    required this.currentZoom,
+    required this.onZoom,
+  });
+  final List<double> availableZooms;
+  final double currentZoom;
+  final ValueChanged<double> onZoom;
+
+  String _label(double z) {
+    if (z == z.truncateToDouble() && z >= 1) {
+      return '${z.toInt()}×';
+    }
+    return '${z.toStringAsFixed(1)}×';
+  }
 
   @override
   Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: RadialGradient(
-            center: Alignment.center,
-            radius: 1.0,
-            colors: [
-              Colors.transparent,
-              Colors.black.withValues(alpha: strength * 0.9),
-            ],
-            stops: const [0.2, 1.0],
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: availableZooms.map((z) {
+        final isSelected = (z - currentZoom).abs() < 0.15;
+        return GestureDetector(
+          onTap: () {
+            HapticFeedback.selectionClick();
+            onZoom(z);
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? Colors.black.withValues(alpha: 0.65)
+                  : Colors.black.withValues(alpha: 0.28),
+              borderRadius: BorderRadius.circular(20),
+              border: isSelected
+                  ? Border.all(
+                      color: Colors.white.withValues(alpha: 0.55), width: 0.8)
+                  : null,
+            ),
+            child: Text(
+              _label(z),
+              style: TextStyle(
+                color: isSelected
+                    ? Colors.white
+                    : Colors.white.withValues(alpha: 0.70),
+                fontSize: isSelected ? 13 : 12,
+                fontWeight:
+                    isSelected ? FontWeight.w600 : FontWeight.w400,
+                letterSpacing: 0.3,
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      }).toList(),
     );
   }
 }
 
-class _LensTintOverlay extends StatelessWidget {
-  const _LensTintOverlay({required this.tint});
-  final Color tint;
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        decoration: BoxDecoration(color: tint),
-      ),
-    );
-  }
-}
-
+// ── Overlays ──────────────────────────────────────────────────────────────────
 class _LookBadge extends StatelessWidget {
-  const _LookBadge({required this.look});
+  const _LookBadge({required this.look, required this.leicaLookEnabled});
   final LeicaLook look;
+  final bool leicaLookEnabled;
 
   @override
   Widget build(BuildContext context) {
+    final label = leicaLookEnabled ? look.displayName.toUpperCase() : 'CLEAN';
+    final color = leicaLookEnabled ? look.accentColor : Colors.white54;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
         color: LeicaColors.overlay,
         borderRadius: BorderRadius.circular(3),
-        border:
-            Border.all(color: look.accentColor.withValues(alpha: 0.6), width: 1),
+        border: Border.all(color: color.withValues(alpha: 0.6), width: 1),
       ),
       child: Text(
-        look.displayName.toUpperCase(),
+        label,
         style: TextStyle(
-          color: look.accentColor,
+          color: color,
           fontSize: 9,
           fontWeight: FontWeight.w700,
           letterSpacing: 2,

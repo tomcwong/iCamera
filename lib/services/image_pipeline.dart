@@ -61,14 +61,18 @@ class ImagePipeline {
     CaptureSettings settings,
     Float32List? segmentationMask,
   ) async {
-    // 1. Colour look (Dart trilinear LUT)
-    var pixels = lutEngine.apply(settings.selectedLook, rgba);
+    var pixels = rgba;
 
-    // 2. Lens vignetting (Dart)
-    final vigMap = LensRenderer.instance.buildVignetteMap(
-      width, height, settings.selectedLens, settings.aperture,
-    );
-    LensRenderer.instance.applyVignette(pixels, vigMap);
+    if (settings.leicaLookEnabled) {
+      // 1. Colour look (Dart trilinear LUT)
+      pixels = lutEngine.apply(settings.selectedLook, pixels);
+
+      // 2. Lens vignetting (Dart)
+      final vigMap = LensRenderer.instance.buildVignetteMap(
+        width, height, settings.selectedLens, settings.aperture,
+      );
+      LensRenderer.instance.applyVignette(pixels, vigMap);
+    }
 
     // 3. Bokeh (Dart, aperture mode only)
     if (settings.bokehEnabled && settings.mode == CaptureMode.aperture) {

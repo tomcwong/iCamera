@@ -308,6 +308,7 @@ toc_items = [
     ("12.", "Photo Quality — STD vs HQ"),
     ("13.", "Saving & Finding Your Photos"),
     ("14.", "Tips & Troubleshooting"),
+    ("15.", "Understanding iPhone Camera Sensors & Resolution"),
 ]
 for num, title in toc_items:
     para = doc.add_paragraph()
@@ -916,6 +917,109 @@ body(doc,
      "Ensure the app has Storage permission. On Android 13+, this means Photos & Videos "
      "permission. Go to Settings → Apps → iCamera → Permissions → "
      "Photos & Videos → Allow.")
+add_spacer(doc)
+
+# ════════════════════════════════════════════════════════════════════════════
+# 15. UNDERSTANDING IPHONE CAMERA SENSORS & RESOLUTION
+# ════════════════════════════════════════════════════════════════════════════
+heading1(doc, "15.  Understanding iPhone Camera Sensors & Resolution")
+body(doc,
+     "This section answers a question many iPhone users ask: why does a photo from iCamera on "
+     "a 48 MP iPhone look the same size as a photo from an iPhone 13? The answer reveals "
+     "something important about how modern smartphone cameras actually work.")
+
+heading2(doc, "Why iCamera Captures at 12 MP on Every iPhone")
+body(doc,
+     "iCamera uses Apple's AVCaptureSessionPresetPhoto — the same capture mode the built-in "
+     "Camera app uses for standard JPEG and HEIF photos. On every current iPhone, this mode "
+     "produces a 12 MP output (approximately 4032 × 3024 pixels in landscape, or 3024 × 4032 "
+     "in portrait). This is true whether your iPhone has a 12 MP, 48 MP, or any future sensor.")
+tip_box(doc,
+        "12 MP is more than enough for any screen (phone, TV, laptop) and prints up to A2 size "
+        "(59 cm × 42 cm) at full quality. Megapixel count beyond 12 MP makes almost no visible "
+        "difference on any display you will use in daily life.")
+
+heading2(doc, "What Does a 48 MP Sensor Actually Do?")
+body(doc,
+     "On iPhones with 48 MP sensors (iPhone 15 onwards), Apple uses a technique called "
+     "pixel binning. The 48 million tiny sensor pixels are grouped into clusters of four, "
+     "and each cluster is combined into one output pixel. The result is still a 12 MP photo "
+     "— but each of those 12 million pixels was built from four real sensor measurements "
+     "instead of one.")
+
+bullet(doc,
+       "Four pixels worth of light data merged into one output pixel means far less noise. "
+       "Your photos in dim restaurants, indoors, or at dusk are noticeably cleaner and "
+       "sharper — even though the pixel count is identical to iPhone 13.",
+       bold_prefix="Better low-light quality:  ")
+bullet(doc,
+       "When you zoom in on a 12 MP photo from a 48 MP iPhone on the screen, you will see "
+       "more fine detail and less grain in dark areas compared to a 12 MP photo from a "
+       "12 MP sensor iPhone.",
+       bold_prefix="More detail when zooming in:  ")
+bullet(doc,
+       "The 48 MP sensor captures a wider tonal range — more detail visible in very bright "
+       "highlights (sky, windows) AND very dark shadows simultaneously, in the same photo.",
+       bold_prefix="Wider dynamic range:  ")
+
+heading2(doc, "Lossless 2× Zoom on 48 MP iPhones")
+body(doc,
+     "One of the most practical benefits of a 48 MP sensor is lossless 2× zoom. When you "
+     "zoom to 2× on a 48 MP iPhone, the camera does not perform digital zoom (which degrades "
+     "quality). Instead it uses only the centre crop of the 48 MP sensor — which is exactly "
+     "12 MP — giving you a true optically-equivalent zoom with no quality loss. On an "
+     "iPhone 13 (12 MP sensor), 2× zoom is always digital zoom and the photo quality "
+     "noticeably degrades.")
+
+heading2(doc, "What About Full 48 MP — Can iCamera Access It?")
+body(doc,
+     "Full 48 MP capture is only available through Apple ProRAW — a separate RAW format that "
+     "bypasses the standard capture pipeline entirely. This requires a different API and produces "
+     "files of 50–80 MB each. iCamera's current RAW mode saves a standard DNG via the normal "
+     "capture path, which is still 12 MP. Full 48 MP ProRAW support is a potential future "
+     "addition for professional users who need it.")
+tip_box(doc,
+        "For 95% of users — social media, printing, sharing — 12 MP JPEG or HEIF is the right "
+        "format. ProRAW / 48 MP is for professional photographers who edit extensively in "
+        "Lightroom or similar tools and need every pixel the sensor can produce.")
+
+heading2(doc, "The Real Reasons to Upgrade Your iPhone Camera")
+body(doc,
+     "The megapixel number on the box is one of the least important factors in final photo "
+     "quality. Here is what actually improves between iPhone generations:")
+
+two_col_table(doc,
+    ["Improvement", "What It Means in Practice"],
+    [
+        ["Larger physical sensor size",
+         "Bigger sensor = each pixel captures more light. Night photos and indoor shots are "
+         "cleaner and more detailed even at 12 MP."],
+        ["Better low-light performance",
+         "Newer sensors have less electronic noise at high ISO. Photos in dim light look "
+         "cleaner without needing to raise ISO as high."],
+        ["Wider dynamic range",
+         "More detail preserved in bright highlights (sky, windows) and dark shadows "
+         "in the same photo simultaneously."],
+        ["Lossless 2× zoom (48 MP iPhones)",
+         "True optical-quality zoom at 2× using the centre sensor crop. iPhone 13 must "
+         "use digital zoom at 2× which softens the image."],
+        ["Improved computational photography",
+         "Newer Apple chips run better Smart HDR, Deep Fusion, and Photonic Engine "
+         "algorithms that further improve sharpness and colour in every shot."],
+        ["Better optics",
+         "Each generation brings sharper lenses, wider apertures, and better edge-to-edge "
+         "sharpness — all of which improve the 12 MP output quality noticeably."],
+    ],
+    col_widths=[5.5, 10]
+)
+add_spacer(doc)
+
+body(doc,
+     "The bottom line: the final JPEG or HEIF photo from an iPhone 15, 16, or 17 is still "
+     "12 MP — the same pixel count as iPhone 13. But the quality of those 12 MP is "
+     "meaningfully better, especially in low light, at 2× zoom, and in high-contrast scenes. "
+     "You will see and feel the difference in real shooting — just not in the file size or "
+     "pixel count.")
 add_spacer(doc)
 
 # ════════════════════════════════════════════════════════════════════════════

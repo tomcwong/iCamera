@@ -67,4 +67,18 @@ class ManualCameraService {
       await _ch.invokeMethod<void>('openGallery');
     } catch (_) {}
   }
+
+  /// Returns the optical zoom switch-over factors for the back camera on iOS.
+  /// Always includes 1.0. Ultra-wide adds 0.5; telephoto adds 2×/3×/5× etc.
+  /// Returns [1.0] on Android or on error.
+  Future<List<double>> getAvailableZoomFactors() async {
+    if (!Platform.isIOS) return [1.0];
+    try {
+      final raw = await _ch.invokeMethod<List>('getAvailableZoomFactors');
+      if (raw == null || raw.isEmpty) return [1.0];
+      return raw.map((e) => (e as num).toDouble()).toList();
+    } catch (_) {
+      return [1.0];
+    }
+  }
 }

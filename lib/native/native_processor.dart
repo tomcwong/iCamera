@@ -83,44 +83,48 @@ class NativeProcessor {
     // Copy Dart bytes → native src buffer
     _src.asTypedList(bytes).setAll(0, rgba);
 
-    // 1. Colour look (3D LUT) ────────────────────────────────────────────────
-    final lutPtr = await _luts.get(settings.selectedLook);
-    if (lutPtr != null) {
-      _b.apply3dLut(_src, pixels, lutPtr, 33);
+    // 1. Colour look (3D LUT) — Leica Look only ─────────────────────────────
+    if (settings.leicaLookEnabled) {
+      final lutPtr = await _luts.get(settings.selectedLook);
+      if (lutPtr != null) {
+        _b.apply3dLut(_src, pixels, lutPtr, 33);
+      }
     }
 
-    // 2. Exposure compensation ───────────────────────────────────────────────
+    // 2. Exposure compensation — always applied ──────────────────────────────
     if (settings.exposureCompensation != 0.0) {
       _b.applyExposure(_src, pixels, settings.exposureCompensation);
     }
 
-    // 3. White balance — applied in all modes whenever user has moved off neutral
+    // 3. White balance — always applied when off neutral ─────────────────────
     if (settings.whiteBalanceKelvin != 5500) {
       _applyKelvin(settings.whiteBalanceKelvin, pixels);
     }
 
-    // 4. Tone curve (film-like contrast + highlight rolloff) ──────────────────
-    _b.applyToneCurve(_src, pixels, 0.16, 0.88);
+    if (settings.leicaLookEnabled) {
+      // 4. Tone curve (film-like contrast + highlight rolloff) ────────────────
+      _b.applyToneCurve(_src, pixels, 0.16, 0.88);
 
-    // 5. Lens vignetting ─────────────────────────────────────────────────────
-    final vStr = _vignetteStrength(settings.selectedLens, settings.aperture);
-    _b.applyVignette(_src, width, height, vStr);
+      // 5. Lens vignetting ───────────────────────────────────────────────────
+      final vStr = _vignetteStrength(settings.selectedLens, settings.aperture);
+      _b.applyVignette(_src, width, height, vStr);
 
-    // 6. Chromatic aberration (not in AUTO mode) ──────────────────────────────
-    if (settings.mode != CaptureMode.auto) {
-      final fringe = _caFringe(settings.selectedLens, settings.aperture);
-      if (fringe > 0.5) {
-        _b.applyCa(_src, _dst, width, height, fringe);
-        _flip();
+      // 6. Chromatic aberration (not in AUTO mode) ──────────────────────────
+      if (settings.mode != CaptureMode.auto) {
+        final fringe = _caFringe(settings.selectedLens, settings.aperture);
+        if (fringe > 0.5) {
+          _b.applyCa(_src, _dst, width, height, fringe);
+          _flip();
+        }
       }
-    }
 
-    // 7. Barrel distortion ───────────────────────────────────────────────────
-    if (settings.mode != CaptureMode.auto) {
-      final k1 = settings.selectedLens.distortionK1;
-      if (k1.abs() > 0.001) {
-        _b.applyDistortion(_src, _dst, width, height, k1);
-        _flip();
+      // 7. Barrel distortion ─────────────────────────────────────────────────
+      if (settings.mode != CaptureMode.auto) {
+        final k1 = settings.selectedLens.distortionK1;
+        if (k1.abs() > 0.001) {
+          _b.applyDistortion(_src, _dst, width, height, k1);
+          _flip();
+        }
       }
     }
 

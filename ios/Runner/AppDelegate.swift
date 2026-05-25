@@ -42,6 +42,9 @@ import AVFoundation
       case "openGallery":
         result(nil)
 
+      case "getAvailableZoomFactors":
+        self?.getAvailableZoomFactors(result: result)
+
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -98,5 +101,42 @@ import AVFoundation
     }
     let ev = Double(device.exposureTargetBias)
     result(["iso": iso, "shutterDenom": shutterDenom, "ev": ev])
+  }
+
+  private func getAvailableZoomFactors(result: @escaping FlutterResult) {
+    var factors: [Double] = [1.0]
+
+    // Detect ultra-wide and telephoto physical cameras
+    let session = AVCaptureDevice.DiscoverySession(
+      deviceTypes: [.builtInUltraWideCamera, .builtInTelephotoCamera],
+      mediaType: .video,
+      position: .back
+    )
+    var hasTelephoto = false
+    for device in session.devices {
+      if device.deviceType == .builtInUltraWideCamera {
+        factors.append(0.5)
+      }
+      if device.deviceType == .builtInTelephotoCamera {
+        hasTelephoto = true
+      }
+    }
+
+    // For telephoto, read the optical switch-over zoom from the virtual device
+    if hasTelephoto {
+      let virtualTypes: [AVCaptureDevice.DeviceType] = [
+        .builtInTripleCamera, .builtInDualCamera, .builtInDualWideCamera
+      ]
+      for vType in virtualTypes {
+        if let vDev = AVCaptureDevice.default(vType, for: .video, position: .back) {
+          if let teleZoom = vDev.virtualDeviceSwitchOverVideoZoomFactors.last {
+            factors.append(teleZoom.doubleValue)
+          }
+          break
+        }
+      }
+    }
+
+    result(factors.sorted())
   }
 }

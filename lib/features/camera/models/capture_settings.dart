@@ -16,7 +16,7 @@ class CaptureSettings {
     this.shutterSpeedDenominator = 60,
     this.whiteBalanceKelvin = 5500,
     this.aperture = 1.4,
-    this.selectedLook = LeicaLook.classic,
+    this.selectedLook = LeicaLook.contemporary,
     this.selectedLens = LensProfile.summilux28,
     this.flashMode = FlashMode.off,
     this.rawEnabled = false,
@@ -25,6 +25,7 @@ class CaptureSettings {
     this.quality = CaptureQuality.standard,
     this.aspectRatio = CaptureAspectRatio.aspect4_3,
     this.timerSeconds = 0,
+    this.leicaLookEnabled = true,
   });
 
   final CaptureMode mode;
@@ -42,6 +43,9 @@ class CaptureSettings {
   final CaptureAspectRatio aspectRatio;
   /// Self-timer delay in seconds. 0 = off.
   final int timerSeconds;
+  /// When true, applies full Leica pipeline (LUT, vignette, CA, distortion).
+  /// When false, saves a clean unprocessed JPEG (only exposure + WB applied).
+  final bool leicaLookEnabled;
 
   static const List<int> wbPresets = [2800, 3500, 4500, 5500, 6500, 8000];
   static const List<String> wbLabels = ['Bulb', 'Indoor', 'Fluorescent', 'Daylight', 'Cloudy', 'Shade'];
@@ -66,6 +70,7 @@ class CaptureSettings {
     CaptureQuality? quality,
     CaptureAspectRatio? aspectRatio,
     int? timerSeconds,
+    bool? leicaLookEnabled,
   }) {
     return CaptureSettings(
       mode: mode ?? this.mode,
@@ -82,6 +87,7 @@ class CaptureSettings {
       quality: quality ?? this.quality,
       aspectRatio: aspectRatio ?? this.aspectRatio,
       timerSeconds: timerSeconds ?? this.timerSeconds,
+      leicaLookEnabled: leicaLookEnabled ?? this.leicaLookEnabled,
     );
   }
 }
