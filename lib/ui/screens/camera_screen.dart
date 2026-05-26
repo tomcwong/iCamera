@@ -199,65 +199,6 @@ Uint8List _patchExifOrientation1(Uint8List app1) {
   return app1;
 }
 
-// Patch ISOSpeedRatings, ExposureTime, and FNumber in an APP1 for PRO captures.
-// Only updates tags that already exist in the ExifIFD — never inserts new entries.
-Uint8List _patchExifProSettings(
-    Uint8List app1, int iso, int shutterDenom, double aperture) {
-  if (app1.length < 18) return app1;
-  if (app1[4] != 0x45 || app1[5] != 0x78 || app1[6] != 0x69 ||
-      app1[7] != 0x66 || app1[8] != 0x00 || app1[9] != 0x00) { return app1; }
-  final t = 10;
-  final le = app1[t] == 0x49;
-  int r16(int o) => le ? (app1[o] | app1[o+1]<<8) : (app1[o]<<8 | app1[o+1]);
-  int r32(int o) => le
-      ? (app1[o] | app1[o+1]<<8 | app1[o+2]<<16 | app1[o+3]<<24)
-      : (app1[o]<<24 | app1[o+1]<<16 | app1[o+2]<<8 | app1[o+3]);
-  final out = Uint8List.fromList(app1);
-  void w16(int o, int v) {
-    if (le) { out[o]=v&0xFF; out[o+1]=(v>>8)&0xFF; }
-    else     { out[o]=(v>>8)&0xFF; out[o+1]=v&0xFF; }
-  }
-  void w32(int o, int v) {
-    if (le) { out[o]=v&0xFF; out[o+1]=(v>>8)&0xFF; out[o+2]=(v>>16)&0xFF; out[o+3]=(v>>24)&0xFF; }
-    else    { out[o]=(v>>24)&0xFF; out[o+1]=(v>>16)&0xFF; out[o+2]=(v>>8)&0xFF; out[o+3]=v&0xFF; }
-  }
-  final ifd0 = t + r32(t + 4);
-  if (ifd0 + 2 > app1.length) return out;
-  int? exifIfdRel;
-  final n0 = r16(ifd0);
-  for (int i = 0; i < n0; i++) {
-    final e = ifd0 + 2 + i * 12;
-    if (e + 12 > app1.length) break;
-    if (r16(e) == 0x8769) { exifIfdRel = r32(e + 8); break; }
-  }
-  if (exifIfdRel == null) return out;
-  final exifIfd = t + exifIfdRel;
-  if (exifIfd + 2 > app1.length) return out;
-  final nE = r16(exifIfd);
-  for (int i = 0; i < nE; i++) {
-    final e = exifIfd + 2 + i * 12;
-    if (e + 12 > app1.length) break;
-    final tag = r16(e);
-    final type = r16(e + 2);
-    if (tag == 0x8827 && type == 3) {
-      // ISOSpeedRatings: SHORT inline
-      w16(e + 8, iso); w16(e + 10, 0);
-    } else if (tag == 0x829A && type == 5) {
-      // ExposureTime: RATIONAL at offset → 1/shutterDenom
-      final off = t + r32(e + 8);
-      if (off + 8 <= app1.length) { w32(off, 1); w32(off + 4, shutterDenom); }
-    } else if (tag == 0x829D && type == 5) {
-      // FNumber: RATIONAL at offset → aperture*10/10
-      final off = t + r32(e + 8);
-      if (off + 8 <= app1.length) {
-        final a10 = (aperture * 10).round();
-        w32(off, a10); w32(off + 4, 10);
-      }
-    }
-  }
-  return out;
-}
-
 // Inject an APP1 segment into a JPEG, replacing any existing APP0/APP1.
 Uint8List _injectApp1Exif(Uint8List jpeg, Uint8List app1) {
   final out = BytesBuilder();
@@ -350,13 +291,13 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 
   void _startLiveExposurePoll() {
     _liveExposureTimer = Timer.periodic(const Duration(milliseconds: 600), (_) async {
-      final settings = ref.read(captureSettingsProvider);
       final live = await ManualCameraService.instance.getLiveExposure();
       if (live != null && mounted) {
         setState(() {
           final apt = (live['aperture'] as num?)?.toDouble() ?? 0;
           if (apt > 0) _liveAperture = apt;
-          if (settings.mode != CaptureMode.auto) return;
+          // Always update live ISO/SS — in PRO mode this lets the HUD reflect
+          // what the sensor actually uses, confirming manual exposure is applied.
           _liveIso = (live['iso'] as num?)?.toInt() ?? 0;
           _liveShutterDenom = (live['shutterDenom'] as num?)?.toInt() ?? 0;
           _liveEv = (live['ev'] as num?)?.toDouble() ?? 0;
@@ -564,11 +505,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
           final jpegBytes = await compute(_encodeRgbaToJpeg,
               {'rgba': processedRgba, 'width': width, 'height': height, 'quality': 85});
           final app1Raw = _extractApp1Exif(rawBytes);
-          var app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
-          if (app1 != null && settings.mode == CaptureMode.manual) {
-            app1 = _patchExifProSettings(
-                app1, settings.iso, settings.shutterSpeedDenominator, settings.aperture);
-          }
+          final app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
           final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
           path = await DngWriter.instance.saveJpegLocal(finalJpeg);
         }
@@ -581,12 +518,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
           'quality': jpegQuality,
         });
         final app1Raw = _extractApp1Exif(rawBytes);
-        var app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
-        // In PRO mode: overwrite ISO/SS/FNumber in EXIF to match intended settings.
-        if (app1 != null && settings.mode == CaptureMode.manual) {
-          app1 = _patchExifProSettings(
-              app1, settings.iso, settings.shutterSpeedDenominator, settings.aperture);
-        }
+        final app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
         final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
         // Save locally so GPS can be injected before the gallery copy is made.
         path = await DngWriter.instance.saveJpegLocal(finalJpeg);
@@ -651,6 +583,13 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     final next = ref.read(captureSettingsProvider);
     if (prev.selectedLens != next.selectedLens) {
       _setZoom(next.selectedLens.defaultZoom);
+    }
+    // Apply manual exposure immediately when ISO or SS changes in PRO mode so
+    // the sensor updates before capture and the live HUD reflects real values.
+    if (next.mode == CaptureMode.manual &&
+        (prev.iso != next.iso ||
+            prev.shutterSpeedDenominator != next.shutterSpeedDenominator)) {
+      ref.read(cameraControllerProvider.notifier).applyManualSettings(next);
     }
   }
 
