@@ -22,7 +22,6 @@ import '../../services/image_pipeline.dart';
 import '../../services/manual_camera_service.dart';
 import '../widgets/shutter_button.dart';
 import '../widgets/exposure_wheel.dart';
-import '../widgets/look_selector.dart';
 import '../widgets/wb_selector.dart';
 import '../widgets/lens_selector.dart';
 
@@ -598,8 +597,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       settings: settings,
       activePanel: _activeTopPanel,
       onPanelTap: _toggleTopPanel,
-      onLeicaTap: () => _updateSettings(
-          (s) => s.copyWith(leicaLookEnabled: !s.leicaLookEnabled)),
       liveIso: _liveIso,
       liveShutterDenom: _liveShutterDenom,
       liveEv: _liveEv,
@@ -1065,7 +1062,6 @@ class _TopHud extends StatelessWidget {
     required this.settings,
     required this.activePanel,
     required this.onPanelTap,
-    required this.onLeicaTap,
     this.liveIso = 0,
     this.liveShutterDenom = 0,
     this.liveEv = 0,
@@ -1074,7 +1070,6 @@ class _TopHud extends StatelessWidget {
   final CaptureSettings settings;
   final _TopPanel? activePanel;
   final void Function(_TopPanel) onPanelTap;
-  final VoidCallback onLeicaTap;
   final int liveIso;
   final int liveShutterDenom;
   final double liveEv;
@@ -1153,24 +1148,26 @@ class _TopHud extends StatelessWidget {
                   ],
                 ),
               ),
-              // LEICA toggle
+              // LEICA — opens look-selector panel; red when look is enabled
               GestureDetector(
                 onTap: () {
                   HapticFeedback.selectionClick();
-                  onLeicaTap();
+                  onPanelTap(_TopPanel.looks);
                 },
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: settings.leicaLookEnabled
-                        ? LeicaColors.red.withValues(alpha: 0.15)
+                    color: (settings.leicaLookEnabled ||
+                            activePanel == _TopPanel.looks)
+                        ? LeicaColors.red.withValues(alpha: 0.18)
                         : Colors.transparent,
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(
-                      color: settings.leicaLookEnabled
-                          ? LeicaColors.red
+                      color: (settings.leicaLookEnabled ||
+                              activePanel == _TopPanel.looks)
+                          ? LeicaColors.red.withValues(alpha: 0.55)
                           : Colors.white30,
                       width: 1,
                     ),
@@ -1178,7 +1175,8 @@ class _TopHud extends StatelessWidget {
                   child: Text(
                     'LEICA',
                     style: TextStyle(
-                      color: settings.leicaLookEnabled
+                      color: (settings.leicaLookEnabled ||
+                              activePanel == _TopPanel.looks)
                           ? LeicaColors.red
                           : Colors.white54,
                       fontSize: 10,
@@ -1245,7 +1243,7 @@ class _TopHud extends StatelessWidget {
   }
 }
 
-// Tappable HUD column with active highlight
+// Tappable HUD column — highlights red when its panel is open.
 class _HudTap extends StatelessWidget {
   const _HudTap(
       {required this.child, required this.active, required this.onTap});
@@ -1262,13 +1260,16 @@ class _HudTap extends StatelessWidget {
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
-        padding:
-            const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
           color: active
-              ? Colors.white.withValues(alpha: 0.12)
+              ? LeicaColors.red.withValues(alpha: 0.18)
               : Colors.transparent,
           borderRadius: BorderRadius.circular(6),
+          border: active
+              ? Border.all(
+                  color: LeicaColors.red.withValues(alpha: 0.55), width: 1)
+              : null,
         ),
         child: child,
       ),
@@ -1339,13 +1340,9 @@ class _DisplayBar extends StatelessWidget {
             settings: settings,
             onSettingsChanged: onSettingsChanged,
           ),
-        _TopPanel.looks => Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: LookSelector(
-              selected: settings.selectedLook,
-              onSelected: (look) =>
-                  onSettingsChanged((s) => s.copyWith(selectedLook: look)),
-            ),
+        _TopPanel.looks => _LeicaLookPanel(
+            settings: settings,
+            onSettingsChanged: onSettingsChanged,
           ),
         _TopPanel.view => _ViewPanel(showGrid: showGrid, onGridToggle: onGridToggle),
         _TopPanel.timer => _TimerPanel(
@@ -1353,6 +1350,116 @@ class _DisplayBar extends StatelessWidget {
             onSettingsChanged: onSettingsChanged,
           ),
       },
+    );
+  }
+}
+
+// ── Leica Look panel ─────────────────────────────────────────────────────────
+// Shows "LEICA LOOK" title + OFF chip + look chips.
+// Selecting a look enables Leica Look; selecting OFF disables it.
+class _LeicaLookPanel extends StatelessWidget {
+  const _LeicaLookPanel(
+      {required this.settings, required this.onSettingsChanged});
+  final CaptureSettings settings;
+  final void Function(CaptureSettings Function(CaptureSettings))
+      onSettingsChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Text(
+          'LEICA LOOK',
+          style: TextStyle(
+            color: LeicaColors.textSecondary,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 1.5,
+          ),
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          height: 36,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            children: [
+              // OFF chip
+              _LookChip(
+                label: 'OFF',
+                isSelected: !settings.leicaLookEnabled,
+                color: Colors.white54,
+                onTap: () => onSettingsChanged(
+                    (s) => s.copyWith(leicaLookEnabled: false)),
+              ),
+              const SizedBox(width: 8),
+              // One chip per look
+              ...LeicaLook.values.map((look) {
+                final isSelected =
+                    settings.leicaLookEnabled && settings.selectedLook == look;
+                return Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: _LookChip(
+                    label: look.displayName.toUpperCase(),
+                    isSelected: isSelected,
+                    color: look.accentColor,
+                    onTap: () => onSettingsChanged((s) => s.copyWith(
+                          selectedLook: look,
+                          leicaLookEnabled: true,
+                        )),
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _LookChip extends StatelessWidget {
+  const _LookChip({
+    required this.label,
+    required this.isSelected,
+    required this.color,
+    required this.onTap,
+  });
+  final String label;
+  final bool isSelected;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withValues(alpha: 0.18) : Colors.transparent,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: isSelected ? color : LeicaColors.midGray,
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? color : LeicaColors.textSecondary,
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 1.5,
+          ),
+        ),
+      ),
     );
   }
 }
