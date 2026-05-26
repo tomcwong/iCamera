@@ -392,6 +392,13 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       setState(() => _timerCountdown = 0);
     }
     setState(() => _isCapturing = true);
+    // Re-apply manual exposure right before capture — ensures the sensor has
+    // the correct ISO/SS even if something (lens switch, reinit) reset it.
+    if (settings.mode == CaptureMode.manual) {
+      await ref
+          .read(cameraControllerProvider.notifier)
+          .applyManualSettings(settings);
+    }
     final xfile =
         await ref.read(cameraControllerProvider.notifier).capture();
     setState(() => _isCapturing = false);

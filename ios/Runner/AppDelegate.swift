@@ -76,11 +76,14 @@ import MobileCoreServices
       let minIso = device.activeFormat.minISO
       let maxIso = device.activeFormat.maxISO
       let clampedIso = min(max(Float(iso), minIso), maxIso)
-      device.setExposureModeCustom(duration: duration, iso: clampedIso, completionHandler: nil)
-      device.unlockForConfiguration()
-      result(nil)
+      // Completion handler fires when the sensor has actually applied the new
+      // ISO and shutter — only then do we unlock and signal Dart to proceed.
+      device.setExposureModeCustom(duration: duration, iso: clampedIso) { _ in
+        device.unlockForConfiguration()
+        result(nil)
+      }
     } catch {
-      result(nil) // silently fail if configuration lock is unavailable
+      result(nil)
     }
   }
 

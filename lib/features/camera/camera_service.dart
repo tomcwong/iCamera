@@ -149,21 +149,27 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
     if (settings.mode == CaptureMode.manual) {
       await ctrl.setFocusMode(FocusMode.locked);
 
-      // EV-offset fallback: map ISO → exposure bias relative to ISO 100 baseline.
-      // This is guaranteed visible even when Camera2 interop is unavailable.
-      // ISO 400 = +2 EV (4× brighter), ISO 800 = +3 EV, ISO 50 = -1 EV, etc.
-      final double isoEv = math.log(settings.iso / 100) / math.ln2;
-      final double minEv = await ctrl.getMinExposureOffset();
-      final double maxEv = await ctrl.getMaxExposureOffset();
-      final double evOffset = isoEv.clamp(minEv, maxEv).toDouble();
-      await ctrl.setExposureMode(ExposureMode.locked);
-      await ctrl.setExposureOffset(evOffset);
-
-      // Camera2 true hardware ISO + shutter (takes precedence if it works).
-      await ManualCameraService.instance.setManualExposure(
-        iso: settings.iso,
-        shutterDenom: settings.shutterSpeedDenominator,
-      );
+      if (Platform.isIOS) {
+        // On iOS: use native AVCaptureDevice.setExposureModeCustom directly.
+        // DO NOT call ctrl.setExposureMode(locked) first — that locks the
+        // current AUTO values (wrong ISO/SS), and fights the native call.
+        await ManualCameraService.instance.setManualExposure(
+          iso: settings.iso,
+          shutterDenom: settings.shutterSpeedDenominator,
+        );
+      } else {
+        // Android: EV-offset approximation + Camera2 interop.
+        final double isoEv = math.log(settings.iso / 100) / math.ln2;
+        final double minEv = await ctrl.getMinExposureOffset();
+        final double maxEv = await ctrl.getMaxExposureOffset();
+        final double evOffset = isoEv.clamp(minEv, maxEv).toDouble();
+        await ctrl.setExposureMode(ExposureMode.locked);
+        await ctrl.setExposureOffset(evOffset);
+        await ManualCameraService.instance.setManualExposure(
+          iso: settings.iso,
+          shutterDenom: settings.shutterSpeedDenominator,
+        );
+      }
     } else {
       await ctrl.setExposureMode(ExposureMode.auto);
       await ctrl.setFocusMode(FocusMode.auto);
