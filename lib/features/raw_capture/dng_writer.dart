@@ -25,25 +25,29 @@ class DngWriter {
     return dest;
   }
 
-  /// Save processed HEIF bytes to local storage and the system gallery.
-  Future<String> saveProcessedHeif(Uint8List heifBytes) async {
+  /// Save processed HEIF bytes to local storage only (no gallery).
+  /// Call [copyToGallery] separately after any metadata post-processing.
+  Future<String> saveHeifLocal(Uint8List heifBytes) async {
     final dir = await _getLocalDir();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final dest = p.join(dir.path, 'icamera_$timestamp.heic');
     await File(dest).writeAsBytes(heifBytes);
-    await _saveToGallery(dest);
     return dest;
   }
 
-  /// Save processed JPEG bytes to local storage and the system gallery.
-  /// Returns the local file path (used for the in-app thumbnail).
-  Future<String> saveProcessedJpeg(Uint8List jpegBytes) async {
+  /// Save processed JPEG bytes to local storage only (no gallery).
+  /// Call [copyToGallery] separately after any metadata post-processing.
+  Future<String> saveJpegLocal(Uint8List jpegBytes) async {
     final dir = await _getLocalDir();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final dest = p.join(dir.path, 'icamera_$timestamp.jpg');
     await File(dest).writeAsBytes(jpegBytes);
-    await _saveToGallery(dest);
     return dest;
+  }
+
+  /// Copy a local file into the system gallery (Pictures/iCamera album).
+  Future<void> copyToGallery(String filePath) async {
+    await _saveToGallery(filePath);
   }
 
   /// Insert a JPEG file into the system gallery (Pictures/iCamera album).

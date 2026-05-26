@@ -46,6 +46,9 @@ dependencies:
   # --- EXIF read/write ---
   native_exif: ^0.8.0
 
+  # --- Sensors (accelerometer for level indicator) ---
+  sensors_plus: ^4.0.2
+
   # --- Device info ---
   device_info_plus: ^11.2.0
 

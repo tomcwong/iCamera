@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -198,6 +199,65 @@ Uint8List _patchExifOrientation1(Uint8List app1) {
   return app1;
 }
 
+// Patch ISOSpeedRatings, ExposureTime, and FNumber in an APP1 for PRO captures.
+// Only updates tags that already exist in the ExifIFD — never inserts new entries.
+Uint8List _patchExifProSettings(
+    Uint8List app1, int iso, int shutterDenom, double aperture) {
+  if (app1.length < 18) return app1;
+  if (app1[4] != 0x45 || app1[5] != 0x78 || app1[6] != 0x69 ||
+      app1[7] != 0x66 || app1[8] != 0x00 || app1[9] != 0x00) { return app1; }
+  final t = 10;
+  final le = app1[t] == 0x49;
+  int r16(int o) => le ? (app1[o] | app1[o+1]<<8) : (app1[o]<<8 | app1[o+1]);
+  int r32(int o) => le
+      ? (app1[o] | app1[o+1]<<8 | app1[o+2]<<16 | app1[o+3]<<24)
+      : (app1[o]<<24 | app1[o+1]<<16 | app1[o+2]<<8 | app1[o+3]);
+  final out = Uint8List.fromList(app1);
+  void w16(int o, int v) {
+    if (le) { out[o]=v&0xFF; out[o+1]=(v>>8)&0xFF; }
+    else     { out[o]=(v>>8)&0xFF; out[o+1]=v&0xFF; }
+  }
+  void w32(int o, int v) {
+    if (le) { out[o]=v&0xFF; out[o+1]=(v>>8)&0xFF; out[o+2]=(v>>16)&0xFF; out[o+3]=(v>>24)&0xFF; }
+    else    { out[o]=(v>>24)&0xFF; out[o+1]=(v>>16)&0xFF; out[o+2]=(v>>8)&0xFF; out[o+3]=v&0xFF; }
+  }
+  final ifd0 = t + r32(t + 4);
+  if (ifd0 + 2 > app1.length) return out;
+  int? exifIfdRel;
+  final n0 = r16(ifd0);
+  for (int i = 0; i < n0; i++) {
+    final e = ifd0 + 2 + i * 12;
+    if (e + 12 > app1.length) break;
+    if (r16(e) == 0x8769) { exifIfdRel = r32(e + 8); break; }
+  }
+  if (exifIfdRel == null) return out;
+  final exifIfd = t + exifIfdRel;
+  if (exifIfd + 2 > app1.length) return out;
+  final nE = r16(exifIfd);
+  for (int i = 0; i < nE; i++) {
+    final e = exifIfd + 2 + i * 12;
+    if (e + 12 > app1.length) break;
+    final tag = r16(e);
+    final type = r16(e + 2);
+    if (tag == 0x8827 && type == 3) {
+      // ISOSpeedRatings: SHORT inline
+      w16(e + 8, iso); w16(e + 10, 0);
+    } else if (tag == 0x829A && type == 5) {
+      // ExposureTime: RATIONAL at offset → 1/shutterDenom
+      final off = t + r32(e + 8);
+      if (off + 8 <= app1.length) { w32(off, 1); w32(off + 4, shutterDenom); }
+    } else if (tag == 0x829D && type == 5) {
+      // FNumber: RATIONAL at offset → aperture*10/10
+      final off = t + r32(e + 8);
+      if (off + 8 <= app1.length) {
+        final a10 = (aperture * 10).round();
+        w32(off, a10); w32(off + 4, 10);
+      }
+    }
+  }
+  return out;
+}
+
 // Inject an APP1 segment into a JPEG, replacing any existing APP0/APP1.
 Uint8List _injectApp1Exif(Uint8List jpeg, Uint8List app1) {
   final out = BytesBuilder();
@@ -246,6 +306,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   bool _showGearPanel = false;
   int _timerCountdown = 0;
   bool _showGrid = false;
+  bool _showLevel = false;
   bool _mirrorFront = false;
 
   // Live exposure readout (AUTO mode)
@@ -496,15 +557,20 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         final heifBytes = await ManualCameraService.instance
             .encodePixelsToHeif(processedRgba, width, height, quality: 0.9);
         if (heifBytes != null) {
-          path = await DngWriter.instance.saveProcessedHeif(heifBytes);
+          // Save locally first so GPS can be added before gallery copy.
+          path = await DngWriter.instance.saveHeifLocal(heifBytes);
         } else {
           // Fallback: HEIF unavailable (Android / error), save as JPEG.
           final jpegBytes = await compute(_encodeRgbaToJpeg,
               {'rgba': processedRgba, 'width': width, 'height': height, 'quality': 85});
           final app1Raw = _extractApp1Exif(rawBytes);
-          final app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
+          var app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
+          if (app1 != null && settings.mode == CaptureMode.manual) {
+            app1 = _patchExifProSettings(
+                app1, settings.iso, settings.shutterSpeedDenominator, settings.aperture);
+          }
           final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
-          path = await DngWriter.instance.saveProcessedJpeg(finalJpeg);
+          path = await DngWriter.instance.saveJpegLocal(finalJpeg);
         }
       } else {
         final jpegQuality = settings.quality == CaptureQuality.high ? 97 : 85;
@@ -514,15 +580,20 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
           'height': height,
           'quality': jpegQuality,
         });
-        // Preserve original camera EXIF (real ISO/SS/FL) via pure-Dart APP1 injection.
-        // Patch orientation to 1 because bakeOrientation already rotated the pixels.
         final app1Raw = _extractApp1Exif(rawBytes);
-        final app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
+        var app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
+        // In PRO mode: overwrite ISO/SS/FNumber in EXIF to match intended settings.
+        if (app1 != null && settings.mode == CaptureMode.manual) {
+          app1 = _patchExifProSettings(
+              app1, settings.iso, settings.shutterSpeedDenominator, settings.aperture);
+        }
         final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
-        path = await DngWriter.instance.saveProcessedJpeg(finalJpeg);
+        // Save locally so GPS can be injected before the gallery copy is made.
+        path = await DngWriter.instance.saveJpegLocal(finalJpeg);
       }
-      // Best-effort GPS addition via native_exif.
+      // Inject GPS into local file, then copy to gallery so both have location.
       await _addGpsExif(path, _lastGpsPosition);
+      await DngWriter.instance.copyToGallery(path);
       if (mounted) setState(() => _lastCapturePath = path);
     } catch (_) {}
   }
@@ -540,6 +611,16 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 
   Future<void> _addGpsExif(String path, Position? gps) async {
     if (gps == null) return;
+    if (Platform.isIOS) {
+      // native_exif GPS writing silently fails on iOS — use native Swift instead.
+      await ManualCameraService.instance.writeGpsToPhoto(
+        path: path,
+        lat: gps.latitude,
+        lon: gps.longitude,
+        alt: gps.altitude,
+      );
+      return;
+    }
     try {
       final attrs = <String, String>{
         'GPSLatitude': _decimalToDmsRational(gps.latitude),
@@ -642,6 +723,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                 _updateSettings((s) => s.copyWith(whiteBalanceKelvin: k)),
             showGrid: _showGrid,
             onGridToggle: () => setState(() => _showGrid = !_showGrid),
+            showLevel: _showLevel,
+            onLevelToggle: () => setState(() => _showLevel = !_showLevel),
             showMirror: _mirrorFront,
             onMirrorToggle: () => setState(() => _mirrorFront = !_mirrorFront),
           )
@@ -691,6 +774,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
               if (settings.aspectRatio == CaptureAspectRatio.aspect16_9)
                 _AspectCropOverlay(isLandscape: isLandscape, controller: activeController),
               if (_showGrid) const _GridOverlay(),
+              if (_showLevel) const _LevelIndicator(),
               if (_timerCountdown > 0)
                 Center(
                   child: Text(
@@ -1157,8 +1241,9 @@ class _TopHud extends StatelessWidget {
         : settings.shutterSpeedLabel;
     final isoRaw = (isAuto && liveIso > 0) ? liveIso : settings.iso;
     final isoStr = '${_snapIso(isoRaw)}';
-    final aptStr = liveAperture > 0
-        ? 'f/${liveAperture.toStringAsFixed(1)}'
+    // PRO: show user-selected virtual aperture. AUTO: show hardware f-stop.
+    final aptStr = isAuto
+        ? (liveAperture > 0 ? 'f/${liveAperture.toStringAsFixed(1)}' : settings.apertureLabel)
         : settings.apertureLabel;
 
     return Container(
@@ -1365,6 +1450,8 @@ class _DisplayBar extends StatelessWidget {
     required this.onWbChanged,
     required this.showGrid,
     required this.onGridToggle,
+    required this.showLevel,
+    required this.onLevelToggle,
     required this.showMirror,
     required this.onMirrorToggle,
   });
@@ -1375,6 +1462,8 @@ class _DisplayBar extends StatelessWidget {
   final ValueChanged<int> onWbChanged;
   final bool showGrid;
   final VoidCallback onGridToggle;
+  final bool showLevel;
+  final VoidCallback onLevelToggle;
   final bool showMirror;
   final VoidCallback onMirrorToggle;
 
@@ -1442,6 +1531,8 @@ class _DisplayBar extends StatelessWidget {
         _TopPanel.view => _ViewPanel(
             showGrid: showGrid,
             onGridToggle: onGridToggle,
+            showLevel: showLevel,
+            onLevelToggle: onLevelToggle,
             showMirror: showMirror,
             onMirrorToggle: onMirrorToggle,
           ),
@@ -1662,11 +1753,15 @@ class _ViewPanel extends StatelessWidget {
   const _ViewPanel({
     required this.showGrid,
     required this.onGridToggle,
+    required this.showLevel,
+    required this.onLevelToggle,
     required this.showMirror,
     required this.onMirrorToggle,
   });
   final bool showGrid;
   final VoidCallback onGridToggle;
+  final bool showLevel;
+  final VoidCallback onLevelToggle;
   final bool showMirror;
   final VoidCallback onMirrorToggle;
 
@@ -1687,9 +1782,9 @@ class _ViewPanel extends StatelessWidget {
           _ViewChip(
             icon: Icons.straighten_outlined,
             label: 'LEVEL',
-            enabled: false,
-            soon: true,
-            onTap: () {},
+            enabled: showLevel,
+            soon: false,
+            onTap: onLevelToggle,
           ),
           _ViewChip(
             icon: Icons.flip_outlined,
@@ -2007,8 +2102,8 @@ class _LandscapeLeftRail extends StatelessWidget {
         : settings.shutterSpeedLabel;
     final isoRaw = (isAuto && liveIso > 0) ? liveIso : settings.iso;
     final isoStr = '${_snapIso(isoRaw)}';
-    final aptStr = liveAperture > 0
-        ? 'f/${liveAperture.toStringAsFixed(1)}'
+    final aptStr = isAuto
+        ? (liveAperture > 0 ? 'f/${liveAperture.toStringAsFixed(1)}' : settings.apertureLabel)
         : settings.apertureLabel;
 
     return Container(
@@ -2597,8 +2692,8 @@ class _GridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.28)
-      ..strokeWidth = 0.5;
+      ..color = Colors.white.withValues(alpha: 0.5)
+      ..strokeWidth = 1.0;
     canvas.drawLine(
         Offset(size.width / 3, 0), Offset(size.width / 3, size.height), paint);
     canvas.drawLine(
@@ -2611,6 +2706,80 @@ class _GridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GridPainter old) => false;
+}
+
+// ── Level indicator (accelerometer-based horizon line) ────────────────────────
+class _LevelIndicator extends StatefulWidget {
+  const _LevelIndicator();
+
+  @override
+  State<_LevelIndicator> createState() => _LevelIndicatorState();
+}
+
+class _LevelIndicatorState extends State<_LevelIndicator> {
+  StreamSubscription<AccelerometerEvent>? _sub;
+  double _tilt = 0; // normalised x-axis, −1..+1
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = accelerometerEventStream(samplingPeriod: SensorInterval.uiInterval)
+        .listen((e) {
+      if (mounted) setState(() => _tilt = (e.x / 9.8).clamp(-1.0, 1.0));
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: CustomPaint(
+        painter: _LevelPainter(tilt: _tilt),
+        child: const SizedBox.expand(),
+      ),
+    );
+  }
+}
+
+class _LevelPainter extends CustomPainter {
+  final double tilt;
+  const _LevelPainter({required this.tilt});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final isLevel = tilt.abs() < 0.02;
+    final color = isLevel ? const Color(0xFF44FF44) : Colors.white;
+
+    final linePaint = Paint()
+      ..color = color.withValues(alpha: 0.55)
+      ..strokeWidth = 1.0;
+    // Horizontal reference line
+    canvas.drawLine(Offset(cx - 64, cy), Offset(cx + 64, cy), linePaint);
+
+    // Fixed centre notch
+    final notchPaint = Paint()
+      ..color = color.withValues(alpha: 0.35)
+      ..strokeWidth = 1.0;
+    canvas.drawLine(Offset(cx, cy - 10), Offset(cx, cy + 10), notchPaint);
+
+    // Moving bubble — shifts up to ±56 px based on tilt
+    final bubbleX = cx + (tilt * 280).clamp(-56.0, 56.0);
+    canvas.drawCircle(
+      Offset(bubbleX, cy),
+      isLevel ? 6.0 : 5.0,
+      Paint()..color = color,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_LevelPainter old) => old.tilt != tilt;
 }
 
 // ── Fullscreen photo viewer ────────────────────────────────────────────────────

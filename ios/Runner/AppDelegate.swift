@@ -56,6 +56,15 @@ import MobileCoreServices
       case "getAvailableZoomFactors":
         self?.getAvailableZoomFactors(result: result)
 
+      case "writeGpsToPhoto":
+        guard let args = call.arguments as? [String: Any],
+              let path = args["path"] as? String,
+              let lat = args["lat"] as? Double,
+              let lon = args["lon"] as? Double
+        else { result(nil); return }
+        let alt = args["alt"] as? Double ?? 0
+        self?.writeGpsToPhoto(path: path, lat: lat, lon: lon, alt: alt, result: result)
+
       case "encodeRgbaToHeif":
         guard let args = call.arguments as? [String: Any],
               let rgbaData = args["rgba"] as? FlutterStandardTypedData,
@@ -145,6 +154,40 @@ import MobileCoreServices
     let ev = Double(device.exposureTargetBias)
     let aperture = Double(device.lensAperture)
     result(["iso": iso, "shutterDenom": shutterDenom, "ev": ev, "aperture": aperture])
+  }
+
+  // Writes GPS metadata into an existing JPEG at the given file path.
+  // Reads the file with CGImageSource, merges the GPS dictionary, and writes
+  // back to the same path without re-encoding pixel data (lossless metadata).
+  private func writeGpsToPhoto(path: String, lat: Double, lon: Double, alt: Double, result: @escaping FlutterResult) {
+    let fileURL = URL(fileURLWithPath: path)
+    guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil),
+          let uti = CGImageSourceGetType(source),
+          let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+    else { result(nil); return }
+
+    var props = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]) ?? [:]
+    var gps = (props[kCGImagePropertyGPSDictionary as String] as? [String: Any]) ?? [:]
+    gps[kCGImagePropertyGPSLatitude as String] = abs(lat)
+    gps[kCGImagePropertyGPSLatitudeRef as String] = lat >= 0 ? "N" : "S"
+    gps[kCGImagePropertyGPSLongitude as String] = abs(lon)
+    gps[kCGImagePropertyGPSLongitudeRef as String] = lon >= 0 ? "E" : "W"
+    if alt != 0 {
+      gps[kCGImagePropertyGPSAltitude as String] = abs(alt)
+      gps[kCGImagePropertyGPSAltitudeRef as String] = NSNumber(value: alt >= 0 ? 0 : 1)
+    }
+    props[kCGImagePropertyGPSDictionary as String] = gps
+
+    let outputData = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(outputData as CFMutableData, uti, 1, nil)
+    else { result(nil); return }
+    props[kCGImageDestinationLossyCompressionQuality as String] = 0.97
+    CGImageDestinationAddImage(dest, cgImage, props as CFDictionary)
+    guard CGImageDestinationFinalize(dest) else { result(nil); return }
+    do {
+      try (outputData as Data).write(to: fileURL, options: .atomic)
+      result(nil)
+    } catch { result(nil) }
   }
 
   private func encodeRgbaToHeif(rgbaData: Data, width: Int, height: Int, quality: Double, result: @escaping FlutterResult) {

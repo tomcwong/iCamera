@@ -98,6 +98,26 @@ class ManualCameraService {
     } catch (_) {}
   }
 
+  /// Writes GPS metadata into a JPEG at [path] using native iOS ImageIO.
+  /// Uses CGImageDestination to merge the GPS sub-dict without re-running
+  /// our image pipeline. No-op on Android (caller uses native_exif instead).
+  Future<void> writeGpsToPhoto({
+    required String path,
+    required double lat,
+    required double lon,
+    double alt = 0,
+  }) async {
+    if (!Platform.isIOS) return;
+    try {
+      await _ch.invokeMethod<void>('writeGpsToPhoto', {
+        'path': path,
+        'lat': lat,
+        'lon': lon,
+        'alt': alt,
+      });
+    } catch (_) {}
+  }
+
   /// Returns the optical zoom switch-over factors for the back camera on iOS.
   /// Always includes 1.0. Ultra-wide adds 0.5; telephoto adds 2×/3×/5× etc.
   /// Returns [1.0] on Android or on error.
