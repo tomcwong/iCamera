@@ -4,7 +4,7 @@ import '../../lens_simulation/lens_profile.dart';
 
 enum CaptureMode { auto, manual, aperture }
 
-enum CaptureQuality { standard, high }
+enum CaptureQuality { standard, high, heif }
 
 /// 4:3 = natural sensor ratio (default). 16:9 = cropped wide.
 enum CaptureAspectRatio { aspect4_3, aspect16_9 }

@@ -69,6 +69,7 @@ Uint8List _encodeRgbaToJpeg(Map<String, dynamic> args) {
   final rgba = args['rgba'] as Uint8List;
   final width = args['width'] as int;
   final height = args['height'] as int;
+  final quality = args['quality'] as int? ?? 92;
   final image = img.Image.fromBytes(
     width: width,
     height: height,
@@ -76,7 +77,7 @@ Uint8List _encodeRgbaToJpeg(Map<String, dynamic> args) {
     order: img.ChannelOrder.rgba,
     numChannels: 4,
   );
-  return Uint8List.fromList(img.encodeJpg(image, quality: 92));
+  return Uint8List.fromList(img.encodeJpg(image, quality: quality));
 }
 
 // Crops decoded RGBA to the target aspect ratio (center crop).
@@ -470,10 +471,15 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
             segmentationMask: mask,
           );
 
+      final jpegQuality = settings.quality == CaptureQuality.high ||
+              settings.quality == CaptureQuality.heif
+          ? 97
+          : 85;
       final jpegBytes = await compute(_encodeRgbaToJpeg, {
         'rgba': processedRgba,
         'width': width,
         'height': height,
+        'quality': jpegQuality,
       });
 
       // Preserve original camera EXIF (real ISO/SS/FL) via pure-Dart APP1 injection.
@@ -481,7 +487,19 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       final app1Raw = _extractApp1Exif(rawBytes);
       final app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
       final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
-      final path = await DngWriter.instance.saveProcessedJpeg(finalJpeg);
+
+      String path;
+      if (settings.quality == CaptureQuality.heif) {
+        final heifBytes = await ManualCameraService.instance
+            .convertJpegToHeif(finalJpeg, quality: 0.9);
+        if (heifBytes != null) {
+          path = await DngWriter.instance.saveProcessedHeif(heifBytes);
+        } else {
+          path = await DngWriter.instance.saveProcessedJpeg(finalJpeg);
+        }
+      } else {
+        path = await DngWriter.instance.saveProcessedJpeg(finalJpeg);
+      }
       // Best-effort GPS addition via native_exif.
       await _addGpsExif(path, _lastGpsPosition);
       if (mounted) setState(() => _lastCapturePath = path);
@@ -2029,14 +2047,18 @@ class _GearPanel extends StatelessWidget {
                       _GearBtn(
                         icon: Icons.high_quality_outlined,
                         label: 'QUAL',
-                        sublabel: settings.quality == CaptureQuality.high
-                            ? 'HQ'
-                            : 'STD',
-                        active: settings.quality == CaptureQuality.high,
+                        sublabel: settings.quality == CaptureQuality.heif
+                            ? 'HEIF'
+                            : settings.quality == CaptureQuality.high
+                                ? 'HQ'
+                                : 'STD',
+                        active: settings.quality != CaptureQuality.standard,
                         onTap: () => onSettingsChanged((s) => s.copyWith(
                               quality: s.quality == CaptureQuality.standard
                                   ? CaptureQuality.high
-                                  : CaptureQuality.standard,
+                                  : s.quality == CaptureQuality.high
+                                      ? CaptureQuality.heif
+                                      : CaptureQuality.standard,
                             )),
                       ),
                     ]),

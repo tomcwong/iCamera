@@ -1,6 +1,8 @@
 import Flutter
 import UIKit
 import AVFoundation
+import ImageIO
+import MobileCoreServices
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
@@ -44,6 +46,13 @@ import AVFoundation
 
       case "getAvailableZoomFactors":
         self?.getAvailableZoomFactors(result: result)
+
+      case "convertJpegToHeif":
+        guard let args = call.arguments as? [String: Any],
+              let flutterData = args["jpeg"] as? FlutterStandardTypedData
+        else { result(nil); return }
+        let quality = args["quality"] as? Double ?? 0.9
+        self?.convertJpegToHeif(jpegData: flutterData.data, quality: quality, result: result)
 
       default:
         result(FlutterMethodNotImplemented)
@@ -101,6 +110,19 @@ import AVFoundation
     }
     let ev = Double(device.exposureTargetBias)
     result(["iso": iso, "shutterDenom": shutterDenom, "ev": ev])
+  }
+
+  private func convertJpegToHeif(jpegData: Data, quality: Double, result: @escaping FlutterResult) {
+    guard let cgImage = UIImage(data: jpegData)?.cgImage else { result(nil); return }
+    let data = NSMutableData()
+    let uti = "public.heic" as CFString
+    guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, uti, 1, nil) else {
+      result(nil); return
+    }
+    let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
+    CGImageDestinationAddImage(dest, cgImage, options as CFDictionary)
+    guard CGImageDestinationFinalize(dest) else { result(nil); return }
+    result(FlutterStandardTypedData(bytes: data as Data))
   }
 
   private func getAvailableZoomFactors(result: @escaping FlutterResult) {

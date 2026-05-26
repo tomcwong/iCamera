@@ -25,6 +25,16 @@ class DngWriter {
     return dest;
   }
 
+  /// Save processed HEIF bytes to local storage and the system gallery.
+  Future<String> saveProcessedHeif(Uint8List heifBytes) async {
+    final dir = await _getLocalDir();
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final dest = p.join(dir.path, 'icamera_$timestamp.heic');
+    await File(dest).writeAsBytes(heifBytes);
+    await _saveToGallery(dest);
+    return dest;
+  }
+
   /// Save processed JPEG bytes to local storage and the system gallery.
   /// Returns the local file path (used for the in-app thumbnail).
   Future<String> saveProcessedJpeg(Uint8List jpegBytes) async {

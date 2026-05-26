@@ -68,6 +68,22 @@ class ManualCameraService {
     } catch (_) {}
   }
 
+  /// Converts a JPEG to HEIF (H.265) via native iOS ImageIO.
+  /// Returns null on Android or on failure (caller should fall back to JPEG).
+  Future<Uint8List?> convertJpegToHeif(Uint8List jpegBytes,
+      {double quality = 0.9}) async {
+    if (!Platform.isIOS) return null;
+    try {
+      final raw = await _ch.invokeMethod<dynamic>(
+          'convertJpegToHeif', {'jpeg': jpegBytes, 'quality': quality});
+      if (raw == null) return null;
+      if (raw is Uint8List) return raw;
+      return Uint8List.fromList((raw as List).cast<int>());
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Returns the optical zoom switch-over factors for the back camera on iOS.
   /// Always includes 1.0. Ultra-wide adds 0.5; telephoto adds 2×/3×/5× etc.
   /// Returns [1.0] on Android or on error.

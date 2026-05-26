@@ -119,7 +119,9 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
   }
 
   Future<void> setQuality(CaptureQuality quality) async {
-    _preset = (Platform.isIOS || quality == CaptureQuality.high)
+    _preset = (Platform.isIOS ||
+            quality == CaptureQuality.high ||
+            quality == CaptureQuality.heif)
         ? ResolutionPreset.max
         : ResolutionPreset.veryHigh;
     final camera = _controller?.description;
