@@ -143,7 +143,8 @@ import MobileCoreServices
       shutterDenom = 1
     }
     let ev = Double(device.exposureTargetBias)
-    result(["iso": iso, "shutterDenom": shutterDenom, "ev": ev])
+    let aperture = Double(device.lensAperture)
+    result(["iso": iso, "shutterDenom": shutterDenom, "ev": ev, "aperture": aperture])
   }
 
   private func encodeRgbaToHeif(rgbaData: Data, width: Int, height: Int, quality: Double, result: @escaping FlutterResult) {

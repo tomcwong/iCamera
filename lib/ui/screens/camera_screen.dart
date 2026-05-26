@@ -252,6 +252,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   int _liveIso = 0;
   int _liveShutterDenom = 0;
   double _liveEv = 0;
+  double _liveAperture = 0;
   Timer? _liveExposureTimer;
 
   // GPS for EXIF
@@ -289,10 +290,12 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   void _startLiveExposurePoll() {
     _liveExposureTimer = Timer.periodic(const Duration(milliseconds: 600), (_) async {
       final settings = ref.read(captureSettingsProvider);
-      if (settings.mode != CaptureMode.auto) return;
       final live = await ManualCameraService.instance.getLiveExposure();
       if (live != null && mounted) {
         setState(() {
+          final apt = (live['aperture'] as num?)?.toDouble() ?? 0;
+          if (apt > 0) _liveAperture = apt;
+          if (settings.mode != CaptureMode.auto) return;
           _liveIso = (live['iso'] as num?)?.toInt() ?? 0;
           _liveShutterDenom = (live['shutterDenom'] as num?)?.toInt() ?? 0;
           _liveEv = (live['ev'] as num?)?.toDouble() ?? 0;
@@ -651,6 +654,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       liveIso: _liveIso,
       liveShutterDenom: _liveShutterDenom,
       liveEv: _liveEv,
+      liveAperture: _liveAperture,
     );
 
     final gearOverlay = _showGearPanel
@@ -763,6 +767,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                     onPanelTap: _toggleTopPanel,
                     liveIso: _liveIso,
                     liveShutterDenom: _liveShutterDenom,
+                    liveAperture: _liveAperture,
                   ),
                   // Centre — preview (previewStack already handles gestures,
                   // focus indicator, zoom indicator, grid, and crop overlay)
@@ -1133,6 +1138,7 @@ class _TopHud extends StatelessWidget {
     this.liveIso = 0,
     this.liveShutterDenom = 0,
     this.liveEv = 0,
+    this.liveAperture = 0,
   });
 
   final CaptureSettings settings;
@@ -1141,6 +1147,7 @@ class _TopHud extends StatelessWidget {
   final int liveIso;
   final int liveShutterDenom;
   final double liveEv;
+  final double liveAperture;
 
   @override
   Widget build(BuildContext context) {
@@ -1150,6 +1157,9 @@ class _TopHud extends StatelessWidget {
         : settings.shutterSpeedLabel;
     final isoRaw = (isAuto && liveIso > 0) ? liveIso : settings.iso;
     final isoStr = '${_snapIso(isoRaw)}';
+    final aptStr = liveAperture > 0
+        ? 'f/${liveAperture.toStringAsFixed(1)}'
+        : settings.apertureLabel;
 
     return Container(
       color: Colors.black,
@@ -1208,7 +1218,7 @@ class _TopHud extends StatelessWidget {
                             fontSize: 7,
                             letterSpacing: 1.5)),
                     const SizedBox(height: 2),
-                    Text(settings.apertureLabel,
+                    Text(aptStr,
                         style: const TextStyle(
                             color: LeicaColors.textPrimary,
                             fontSize: 13,
@@ -1979,6 +1989,7 @@ class _LandscapeLeftRail extends StatelessWidget {
     required this.onPanelTap,
     this.liveIso = 0,
     this.liveShutterDenom = 0,
+    this.liveAperture = 0,
   });
 
   final CaptureSettings settings;
@@ -1986,6 +1997,7 @@ class _LandscapeLeftRail extends StatelessWidget {
   final void Function(_TopPanel) onPanelTap;
   final int liveIso;
   final int liveShutterDenom;
+  final double liveAperture;
 
   @override
   Widget build(BuildContext context) {
@@ -1995,6 +2007,9 @@ class _LandscapeLeftRail extends StatelessWidget {
         : settings.shutterSpeedLabel;
     final isoRaw = (isAuto && liveIso > 0) ? liveIso : settings.iso;
     final isoStr = '${_snapIso(isoRaw)}';
+    final aptStr = liveAperture > 0
+        ? 'f/${liveAperture.toStringAsFixed(1)}'
+        : settings.apertureLabel;
 
     return Container(
       width: 68,
@@ -2011,7 +2026,7 @@ class _LandscapeLeftRail extends StatelessWidget {
           ),
           _LandscapeHudBtn(
             label: 'APT',
-            value: settings.apertureLabel,
+            value: aptStr,
             active: activePanel == _TopPanel.apt,
             onTap: () => onPanelTap(_TopPanel.apt),
           ),
