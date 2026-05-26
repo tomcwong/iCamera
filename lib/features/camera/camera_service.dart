@@ -18,6 +18,7 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
     initialize();
   }
   CameraController? _controller;
+  List<CameraDescription> _allCameras = [];
   // iOS: always use max (AVCaptureSessionPresetPhoto = full 4:3 sensor, ~12MP).
   // veryHigh on iOS maps to AVCaptureSessionPreset1920x1080 which crops the
   // sensor to 16:9, giving a narrower portrait FOV than the native camera app.
@@ -27,6 +28,7 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
   Future<void> initialize() async {
     try {
       final cameras = await availableCameras();
+      _allCameras = cameras;
       if (cameras.isEmpty) {
         state = AsyncValue.error('No cameras found', StackTrace.current);
         return;
@@ -63,7 +65,42 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
   }
 
   /// Set zoom level, clamped to hardware min/max. Returns the applied value.
+  /// On iOS, switches between the ultrawide and wide physical cameras to support
+  /// 0.5× because the wide camera's minimum zoom is 1.0.
   Future<double> setZoomLevel(double zoom) async {
+    if (Platform.isIOS && _allCameras.isNotEmpty) {
+      final ctrl = _controller;
+      if (ctrl != null) {
+        final isUltrawide =
+            ctrl.description.name.toLowerCase().contains('ultra');
+        if (zoom < 1.0 && !isUltrawide) {
+          final uw = _allCameras.firstWhere(
+            (c) =>
+                c.lensDirection == CameraLensDirection.back &&
+                c.name.toLowerCase().contains('ultra'),
+            orElse: () => ctrl.description,
+          );
+          if (uw.name != ctrl.description.name) {
+            state = const AsyncValue.loading();
+            await _initController(uw);
+            return 0.5;
+          }
+          return zoom;
+        }
+        if (zoom >= 1.0 && isUltrawide) {
+          final wide = _allCameras.firstWhere(
+            (c) =>
+                c.lensDirection == CameraLensDirection.back &&
+                !c.name.toLowerCase().contains('ultra'),
+            orElse: () => ctrl.description,
+          );
+          if (wide.name != ctrl.description.name) {
+            state = const AsyncValue.loading();
+            await _initController(wide);
+          }
+        }
+      }
+    }
     final ctrl = _controller;
     if (ctrl == null || !ctrl.value.isInitialized) return zoom;
     try {

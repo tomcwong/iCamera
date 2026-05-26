@@ -21,18 +21,6 @@ class WbSelector extends StatelessWidget {
       height: 36,
       child: Row(
         children: [
-          const Padding(
-            padding: EdgeInsets.only(left: 16, right: 6),
-            child: Text(
-              'WB:',
-              style: TextStyle(
-                color: _accent,
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1.5,
-              ),
-            ),
-          ),
           Expanded(
             child: ListView.separated(
               scrollDirection: Axis.horizontal,

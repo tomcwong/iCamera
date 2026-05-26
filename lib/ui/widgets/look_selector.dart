@@ -19,18 +19,6 @@ class LookSelector extends StatelessWidget {
       height: 36,
       child: Row(
         children: [
-          const Padding(
-            padding: EdgeInsets.only(left: 16, right: 6),
-            child: Text(
-              'Film:',
-              style: TextStyle(
-                color: Color(0xFFE0A060),
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1.5,
-              ),
-            ),
-          ),
           Expanded(
             child: ListView.separated(
               scrollDirection: Axis.horizontal,

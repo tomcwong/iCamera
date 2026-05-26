@@ -51,7 +51,7 @@ class _ExposureWheelState extends State<ExposureWheel> {
             letterSpacing: 1.5,
           ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 10),
         LayoutBuilder(
           builder: (context, constraints) {
             final sidepad = ((constraints.maxWidth - _itemWidth) / 2).clamp(0.0, double.infinity);

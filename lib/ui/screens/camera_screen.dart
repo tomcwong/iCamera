@@ -40,7 +40,14 @@ const _apertureValues = [
 ];
 
 // Which panel is currently shown in the display bar.
-enum _TopPanel { ssApt, lens, wb, iso, looks, view, timer }
+enum _TopPanel { ssApt, apt, lens, wb, iso, looks, view, timer }
+
+// Snap a raw live-ISO value to the nearest standard camera stop.
+int _snapIso(int raw) {
+  if (raw <= 0) return raw;
+  const stops = [50, 64, 100, 125, 200, 250, 400, 500, 800, 1000, 1600, 3200, 6400];
+  return stops.reduce((a, b) => (a - raw).abs() <= (b - raw).abs() ? a : b);
+}
 
 // ── Isolate helpers ───────────────────────────────────────────────────────────
 Map<String, dynamic> _decodeAndRotate(Map<String, dynamic> args) {
@@ -589,6 +596,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       settings: settings,
       activePanel: _activeTopPanel,
       onPanelTap: _toggleTopPanel,
+      onLeicaTap: () => _updateSettings(
+          (s) => s.copyWith(leicaLookEnabled: !s.leicaLookEnabled)),
       liveIso: _liveIso,
       liveShutterDenom: _liveShutterDenom,
       liveEv: _liveEv,
@@ -808,7 +817,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                   );
                 }),
               ),
-              displayBarWidget,
+              SizedBox(height: 90, child: displayBarWidget),
               bottomBarWidget,
               SizedBox(height: MediaQuery.of(context).padding.bottom),
             ],
@@ -1045,6 +1054,7 @@ class _TopHud extends StatelessWidget {
     required this.settings,
     required this.activePanel,
     required this.onPanelTap,
+    required this.onLeicaTap,
     this.liveIso = 0,
     this.liveShutterDenom = 0,
     this.liveEv = 0,
@@ -1053,6 +1063,7 @@ class _TopHud extends StatelessWidget {
   final CaptureSettings settings;
   final _TopPanel? activePanel;
   final void Function(_TopPanel) onPanelTap;
+  final VoidCallback onLeicaTap;
   final int liveIso;
   final int liveShutterDenom;
   final double liveEv;
@@ -1060,32 +1071,38 @@ class _TopHud extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isAuto = settings.mode == CaptureMode.auto;
-
-    // SS: show live value in AUTO mode when available
     final ssStr = (isAuto && liveShutterDenom > 0)
         ? '1/$liveShutterDenom'
         : settings.shutterSpeedLabel;
-
-    const aptLabel = 'APT';
-    final aptStr = settings.apertureLabel;
-
-    // ISO: live in AUTO, manual in PRO
-    final isoStr = (isAuto && liveIso > 0) ? '$liveIso' : settings.isoLabel;
+    final isoRaw = (isAuto && liveIso > 0) ? liveIso : settings.iso;
+    final isoStr = '${_snapIso(isoRaw)}';
 
     return Container(
       color: Colors.black,
-      padding: const EdgeInsets.only(top: 8, left: 12, right: 12, bottom: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      padding: const EdgeInsets.only(top: 4, left: 12, right: 12, bottom: 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          // SS / APT (or SS / EV in AUTO)
-          _HudTap(
-            active: activePanel == _TopPanel.ssApt,
-            onTap: () => onPanelTap(_TopPanel.ssApt),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Column(
+          // App title
+          const Text(
+            'i C a m e r a',
+            style: TextStyle(
+              color: LeicaColors.textPrimary,
+              fontSize: 9,
+              fontWeight: FontWeight.w300,
+              letterSpacing: 4,
+            ),
+          ),
+          const SizedBox(height: 4),
+          // Control row
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              // SS
+              _HudTap(
+                active: activePanel == _TopPanel.ssApt,
+                onTap: () => onPanelTap(_TopPanel.ssApt),
+                child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
@@ -1102,93 +1119,114 @@ class _TopHud extends StatelessWidget {
                             fontWeight: FontWeight.w500)),
                   ],
                 ),
-                const SizedBox(width: 12),
-                Column(
+              ),
+              // APT
+              _HudTap(
+                active: activePanel == _TopPanel.apt,
+                onTap: () => onPanelTap(_TopPanel.apt),
+                child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Text(aptLabel,
-                        style: const TextStyle(
+                    const Text('APT',
+                        style: TextStyle(
                             color: LeicaColors.textDisabled,
                             fontSize: 7,
                             letterSpacing: 1.5)),
                     const SizedBox(height: 2),
-                    Text(aptStr,
+                    Text(settings.apertureLabel,
                         style: const TextStyle(
                             color: LeicaColors.textPrimary,
                             fontSize: 13,
                             fontWeight: FontWeight.w500)),
                   ],
                 ),
-              ],
-            ),
-          ),
-
-          // iCamera — center; tap to open looks panel
-          _HudTap(
-            active: activePanel == _TopPanel.looks,
-            onTap: () => onPanelTap(_TopPanel.looks),
-            child: const Text(
-              'iCamera',
-              style: TextStyle(
-                color: LeicaColors.textPrimary,
-                fontSize: 11,
-                fontWeight: FontWeight.w300,
-                letterSpacing: 4,
               ),
-            ),
-          ),
-
-          // WB
-          _HudTap(
-            active: activePanel == _TopPanel.wb,
-            onTap: () => onPanelTap(_TopPanel.wb),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('WB',
+              // LEICA toggle
+              GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  onLeicaTap();
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 150),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: settings.leicaLookEnabled
+                        ? LeicaColors.red.withValues(alpha: 0.15)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: settings.leicaLookEnabled
+                          ? LeicaColors.red
+                          : Colors.white30,
+                      width: 1,
+                    ),
+                  ),
+                  child: Text(
+                    'LEICA',
                     style: TextStyle(
-                        color: LeicaColors.textDisabled,
-                        fontSize: 7,
-                        letterSpacing: 1.5)),
-                const SizedBox(height: 2),
-                Text(settings.wbLabel,
-                    style: const TextStyle(
-                        color: LeicaColors.textPrimary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500)),
-                Text(
-                  CaptureSettings.wbLabels[
-                      CaptureSettings.wbPresets
+                      color: settings.leicaLookEnabled
+                          ? LeicaColors.red
+                          : Colors.white54,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ),
+              ),
+              // WB
+              _HudTap(
+                active: activePanel == _TopPanel.wb,
+                onTap: () => onPanelTap(_TopPanel.wb),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('WB',
+                        style: TextStyle(
+                            color: LeicaColors.textDisabled,
+                            fontSize: 7,
+                            letterSpacing: 1.5)),
+                    const SizedBox(height: 2),
+                    Text(settings.wbLabel,
+                        style: const TextStyle(
+                            color: LeicaColors.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500)),
+                    Text(
+                      CaptureSettings.wbLabels[CaptureSettings.wbPresets
                           .indexOf(settings.whiteBalanceKelvin)
                           .clamp(0, CaptureSettings.wbLabels.length - 1)],
-                  style: const TextStyle(
-                      color: Colors.white, fontSize: 7, letterSpacing: 1),
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 7, letterSpacing: 1),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-
-          // ISO
-          _HudTap(
-            active: activePanel == _TopPanel.iso,
-            onTap: () => onPanelTap(_TopPanel.iso),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('ISO',
-                    style: TextStyle(
-                        color: LeicaColors.textDisabled,
-                        fontSize: 7,
-                        letterSpacing: 1.5)),
-                const SizedBox(height: 2),
-                Text(isoStr,
-                    style: const TextStyle(
-                        color: LeicaColors.textPrimary,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500)),
-              ],
-            ),
+              ),
+              // ISO
+              _HudTap(
+                active: activePanel == _TopPanel.iso,
+                onTap: () => onPanelTap(_TopPanel.iso),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('ISO',
+                        style: TextStyle(
+                            color: LeicaColors.textDisabled,
+                            fontSize: 7,
+                            letterSpacing: 1.5)),
+                    const SizedBox(height: 2),
+                    Text(isoStr,
+                        style: const TextStyle(
+                            color: LeicaColors.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -1271,6 +1309,20 @@ class _DisplayBar extends StatelessWidget {
         _TopPanel.ssApt => _SsAptPanel(
             settings: settings,
             onSettingsChanged: onSettingsChanged,
+          ),
+        _TopPanel.apt => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: ExposureWheel(
+              values: _apertureValues
+                  .map((v) => 'f/${v.toStringAsFixed(1)}')
+                  .toList(),
+              selectedIndex: _apertureValues
+                  .indexWhere((v) => (v - settings.aperture).abs() < 0.05)
+                  .clamp(0, _apertureValues.length - 1),
+              onChanged: (i) => onSettingsChanged(
+                  (s) => s.copyWith(aperture: _apertureValues[i])),
+              label: 'APERTURE',
+            ),
           ),
         _TopPanel.iso => _IsoPanel(
             settings: settings,
@@ -1572,7 +1624,7 @@ class _BottomBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       color: Colors.black,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         crossAxisAlignment: CrossAxisAlignment.center,
@@ -1822,7 +1874,7 @@ class _GearPanel extends StatelessWidget {
                               mode: s.mode == CaptureMode.aperture
                                   ? CaptureMode.auto
                                   : CaptureMode.aperture));
-                          onPanelActivate(_TopPanel.ssApt);
+                          onPanelActivate(_TopPanel.apt);
                         },
                       ),
                     ]),
@@ -1870,55 +1922,6 @@ class _GearPanel extends StatelessWidget {
                             )),
                       ),
                     ]),
-                    const SizedBox(height: 12),
-                    // Full-width Leica Look / Clean toggle
-                    GestureDetector(
-                      onTap: () => onSettingsChanged(
-                          (s) => s.copyWith(leicaLookEnabled: !s.leicaLookEnabled)),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 11, horizontal: 16),
-                        decoration: BoxDecoration(
-                          color: settings.leicaLookEnabled
-                              ? LeicaColors.red.withValues(alpha: 0.15)
-                              : Colors.white.withValues(alpha: 0.05),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: settings.leicaLookEnabled
-                                ? LeicaColors.red.withValues(alpha: 0.5)
-                                : Colors.white24,
-                            width: 1,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.photo_filter_outlined,
-                              color: settings.leicaLookEnabled
-                                  ? LeicaColors.red
-                                  : Colors.white38,
-                              size: 16,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              settings.leicaLookEnabled
-                                  ? 'LEICA LOOK  ·  ON'
-                                  : 'LEICA LOOK  ·  OFF  (CLEAN OUTPUT)',
-                              style: TextStyle(
-                                color: settings.leicaLookEnabled
-                                    ? LeicaColors.red
-                                    : Colors.white38,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 1.2,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
                   ],
                 ),
             ),
