@@ -305,10 +305,11 @@ toc_items = [
     ("9.",  "White Balance"),
     ("10.", "Flash"),
     ("11.", "RAW Capture"),
-    ("12.", "Photo Quality — STD vs HQ"),
+    ("12.", "Photo Quality — STD / HQ / HEIF"),
     ("13.", "Saving & Finding Your Photos"),
     ("14.", "Tips & Troubleshooting"),
     ("15.", "Understanding iPhone Camera Sensors & Resolution"),
+    ("16.", "How iCamera Applies Manual Exposure on iPhone"),
 ]
 for num, title in toc_items:
     para = doc.add_paragraph()
@@ -794,10 +795,10 @@ add_spacer(doc)
 # ════════════════════════════════════════════════════════════════════════════
 # 12. PHOTO QUALITY
 # ════════════════════════════════════════════════════════════════════════════
-heading1(doc, "12.  Photo Quality Setting — STD vs HQ")
+heading1(doc, "12.  Photo Quality — STD / HQ / HEIF")
 body(doc,
-     "The QUAL button in the controls bar lets you choose between two capture quality levels. "
-     "Tapping it toggles between STD (Standard) and HQ (High Quality).")
+     "The QUAL button in the Gear panel cycles through three capture quality levels. "
+     "Each tap moves to the next option: STD → HQ → HEIF → STD.")
 
 heading2(doc, "What is a Megapixel?")
 body(doc,
@@ -805,33 +806,79 @@ body(doc,
      "is simply one million of those dots. More dots = more fine detail — but also a larger file "
      "and longer processing time.")
 
-heading2(doc, "STD — Standard Quality (~8 MP)")
-body(doc,
-     "Standard mode captures at around 8 megapixels (~3264 × 2448 dots). "
-     "This is the default and recommended for everyday use.")
-bullet(doc, "Shutter response is near-instant — the camera feels as fast as the built-in camera app.")
-bullet(doc, "Photos are saved quickly — the thumbnail appears within about one second.")
-bullet(doc, "8MP is more than enough for every screen: phone, tablet, TV, Instagram, WhatsApp.")
-bullet(doc, "Can print up to approximately A3 size (43 cm × 33 cm) at full quality.")
-tip_box(doc, "Use STD for all everyday shooting. You will not see any quality difference on a screen.")
+two_col_table(doc,
+    ["Setting", "Format", "Quality", "Typical File Size", "Best For"],
+    [
+        ["STD",  "JPEG", "85%",        "~2–3 MB", "Everyday use — fast, small, sharp"],
+        ["HQ",   "JPEG", "97%",        "~5–7 MB", "Large prints, heavy cropping"],
+        ["HEIF", "HEIC", "H.265 ~90%", "~2–4 MB", "Maximum quality, smallest file (Apple ecosystem)"],
+    ],
+    col_widths=[2, 2, 2.5, 2.5, 6.5]
+)
+add_spacer(doc, 10)
 
-heading2(doc, "HQ — High Quality (Full Sensor, up to 13 MP)")
+heading2(doc, "STD — Standard JPEG")
+body(doc, "JPEG at quality 85 — the default for all everyday shooting.")
+bullet(doc, "Fast processing — thumbnail appears within about one second.")
+bullet(doc, "File sizes around 2–3 MB — easy to share by message or email.")
+bullet(doc, "Fine for any screen or A3 print.")
+tip_box(doc, "Use STD for everyday shooting. You will not see any quality difference on a phone or TV screen.")
+
+heading2(doc, "HQ — High Quality JPEG")
+body(doc, "JPEG at quality 97 — maximum detail with minimal compression artefacts.")
+bullet(doc, "More fine detail — useful for very large prints or significant cropping.")
+bullet(doc, "Processing takes 2–4 seconds after the shutter click.")
+bullet(doc, "File sizes noticeably larger (~5–7 MB).")
+tip_box(doc, "Use HQ when you plan to print larger than A3, or need to crop deeply into the photo.")
+
+heading2(doc, "HEIF — Apple High Efficiency Image Format")
 body(doc,
-     "High Quality mode uses the camera sensor at its maximum resolution — up to 13 megapixels "
-     "(~4208 × 3120 dots) on the Xiaomi Pad 6 and similar devices.")
-bullet(doc, "More fine detail — useful for very large prints or heavy cropping.")
-bullet(doc, "Processing takes longer — expect 2–4 seconds after the shutter click.")
-bullet(doc, "File sizes are noticeably larger.")
-tip_box(doc, "Use HQ only when you plan to print larger than A3 or need to crop significantly into the photo.")
+     "HEIF (pronounced ‘HEEF’, file extension .heic) is Apple’s native photo format — the same "
+     "format the built-in iPhone Camera app uses when you select ‘High Efficiency’ in "
+     "iOS Settings → Camera → Formats. It uses H.265 (HEVC) compression, which is roughly "
+     "twice as efficient as JPEG at the same visual quality.")
+bullet(doc,
+       "Same visual quality as HQ JPEG but the file is roughly 50% smaller. "
+       "A photo that would be 6 MB as HQ JPEG is typically 2–3 MB as HEIF.",
+       bold_prefix="Smaller files, same quality:  ")
+bullet(doc,
+       "iCamera encodes your processed pixels directly into HEIF using iOS native ImageIO "
+       "(CGImageDestinationCreateWithData). There is no intermediate JPEG step. "
+       "The Leica Look pipeline runs on the raw pixels first, then those pixels go straight "
+       "into the HEIF encoder. One encode step = maximum quality for the format.",
+       bold_prefix="Direct pixel encoding:  ")
+bullet(doc,
+       "HEIF files open natively in Photos.app, iCloud, Safari, and Mac Preview. "
+       "Windows 11 with the HEIF codec from the Microsoft Store also supports them. "
+       "Some older apps may not recognise .heic files — use HQ JPEG for maximum compatibility.",
+       bold_prefix="Compatibility:  ")
+tip_box(doc,
+        "HEIF is recommended for iPhone users who want maximum quality with the smallest possible "
+        "file. Use HQ JPEG if you need to share with apps or services that do not support .heic.")
+
+heading2(doc, "HEIF vs Leica Look — Not the Same Thing")
+body(doc,
+     "These are two completely separate controls:")
+bullet(doc,
+       "A file compression format. Controls how image data is stored on disk — not what the "
+       "image looks like. Choosing HEIF vs JPEG does not change colours, vignette, or any "
+       "creative effect in your photo.",
+       bold_prefix="HEIF (QUAL button):  ")
+bullet(doc,
+       "A creative processing pipeline (colour grade, vignette, chromatic aberration, distortion) "
+       "applied to the captured pixels. Controlled by the LEICA button. Runs independently of "
+       "the output format. If Leica Look is OFF, the photo is saved clean in whichever format "
+       "is selected.",
+       bold_prefix="Leica Look (LEICA button):  ")
 
 heading2(doc, "How to Switch Quality")
 body(doc,
-     "In the controls bar, look for the QUAL button. The label above it shows the current setting: "
-     "STD = Standard (8MP, fast)  ·  HQ = High Quality (full sensor, slower but maximum detail). "
-     "Tap QUAL to toggle. The camera briefly reinitialises before the new resolution takes effect.")
+     "Open the Gear panel (⚙ button, bottom right) and tap QUAL. "
+     "The label cycles: STD → HQ → HEIF → STD. "
+     "HQ and HEIF both use full sensor resolution; a brief camera reinitialisation occurs "
+     "when switching between resolution levels.")
 add_spacer(doc)
 
-# ════════════════════════════════════════════════════════════════════════════
 # 13. SAVING & FINDING YOUR PHOTOS
 # ════════════════════════════════════════════════════════════════════════════
 heading1(doc, "13.  Saving & Finding Your Photos")
