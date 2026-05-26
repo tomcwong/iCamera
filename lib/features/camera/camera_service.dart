@@ -19,6 +19,9 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
   }
   CameraController? _controller;
   List<CameraDescription> _allCameras = [];
+  // Tracks whether the current iOS back camera is the ultrawide (0.5× equivalent).
+  // Used to avoid re-switching cameras when already on the correct one.
+  bool _isOnUltrawide = false;
   // iOS: always use max (AVCaptureSessionPresetPhoto = full 4:3 sensor, ~12MP).
   // veryHigh on iOS maps to AVCaptureSessionPreset1920x1080 which crops the
   // sensor to 16:9, giving a narrower portrait FOV than the native camera app.
@@ -26,6 +29,7 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
       Platform.isIOS ? ResolutionPreset.max : ResolutionPreset.veryHigh;
 
   Future<void> initialize() async {
+    _isOnUltrawide = false;
     try {
       final cameras = await availableCameras();
       _allCameras = cameras;
@@ -67,40 +71,45 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
   /// Set zoom level, clamped to hardware min/max. Returns the applied value.
   /// On iOS, switches between the ultrawide and wide physical cameras to support
   /// 0.5× because the wide camera's minimum zoom is 1.0.
+  /// Uses _isOnUltrawide flag (not camera name) since Flutter camera descriptions
+  /// use opaque uniqueID strings, not human-readable names.
   Future<double> setZoomLevel(double zoom) async {
     if (Platform.isIOS && _allCameras.isNotEmpty) {
       final ctrl = _controller;
       if (ctrl != null) {
-        final isUltrawide =
-            ctrl.description.name.toLowerCase().contains('ultra');
-        if (zoom < 1.0 && !isUltrawide) {
-          final uw = _allCameras.firstWhere(
-            (c) =>
-                c.lensDirection == CameraLensDirection.back &&
-                c.name.toLowerCase().contains('ultra'),
+        final backCameras = _allCameras
+            .where((c) => c.lensDirection == CameraLensDirection.back)
+            .toList();
+
+        if (zoom < 1.0 && !_isOnUltrawide && backCameras.length >= 2) {
+          // Switch to the other back camera (ultrawide). On iPhone, the second
+          // back camera in AVFoundation's discovery list is the ultrawide.
+          final other = backCameras.firstWhere(
+            (c) => c.name != ctrl.description.name,
             orElse: () => ctrl.description,
           );
-          if (uw.name != ctrl.description.name) {
+          if (other.name != ctrl.description.name) {
             try {
               state = const AsyncValue.loading();
-              await _initController(uw);
+              await _initController(other);
+              _isOnUltrawide = true;
               return 0.5;
             } catch (_) {
-              // Ultrawide init failed — fall through, zoom will be clamped to 1.0
+              // Ultrawide init failed — fall through, clamp to 1.0
             }
           }
-          // Ultrawide not found or failed; fall through to clamp
         }
-        if (zoom >= 1.0 && isUltrawide) {
-          final wide = _allCameras.firstWhere(
-            (c) =>
-                c.lensDirection == CameraLensDirection.back &&
-                !c.name.toLowerCase().contains('ultra'),
+
+        if (zoom >= 1.0 && _isOnUltrawide && backCameras.length >= 2) {
+          // Switch back to wide camera.
+          final other = backCameras.firstWhere(
+            (c) => c.name != ctrl.description.name,
             orElse: () => ctrl.description,
           );
-          if (wide.name != ctrl.description.name) {
+          if (other.name != ctrl.description.name) {
             state = const AsyncValue.loading();
-            await _initController(wide);
+            await _initController(other);
+            _isOnUltrawide = false;
           }
         }
       }
@@ -138,6 +147,7 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
       (c) => c.lensDirection != current?.lensDirection,
       orElse: () => cameras.first,
     );
+    _isOnUltrawide = false;
     state = const AsyncValue.loading();
     await _initController(next);
   }
@@ -147,12 +157,16 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
     if (ctrl == null || !ctrl.value.isInitialized) return;
 
     if (settings.mode == CaptureMode.manual) {
-      await ctrl.setFocusMode(FocusMode.locked);
+      // On iOS: do NOT call ctrl.setFocusMode(locked) — it can trigger the
+      // Flutter plugin to acquire lockForConfiguration and potentially reset
+      // or race with our native setManualExposure call below.
+      if (!Platform.isIOS) {
+        await ctrl.setFocusMode(FocusMode.locked);
+      }
 
       if (Platform.isIOS) {
-        // On iOS: use native AVCaptureDevice.setExposureModeCustom directly.
-        // DO NOT call ctrl.setExposureMode(locked) first — that locks the
-        // current AUTO values (wrong ISO/SS), and fights the native call.
+        // Use native AVCaptureDevice.setExposureModeCustom directly.
+        // The device lock is held until unlockAfterCapture is called.
         await ManualCameraService.instance.setManualExposure(
           iso: settings.iso,
           shutterDenom: settings.shutterSpeedDenominator,

@@ -246,6 +246,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   bool _showGearPanel = false;
   int _timerCountdown = 0;
   bool _showGrid = false;
+  bool _mirrorFront = false;
 
   // Live exposure readout (AUTO mode)
   int _liveIso = 0;
@@ -341,7 +342,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     final ctrl = ref.read(cameraControllerProvider).value;
     if (ctrl == null || !ctrl.value.isInitialized) return;
     final settings = ref.read(captureSettingsProvider);
-    if (settings.mode == CaptureMode.manual) return;
+    final isPro = settings.mode == CaptureMode.manual;
     final size = _previewRenderSize;
     if (size == Size.zero) return;
     final nx = (localPos.dx / size.width).clamp(0.0, 1.0);
@@ -349,8 +350,11 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     try {
       await ctrl.setFocusMode(FocusMode.auto);
       await ctrl.setFocusPoint(Offset(nx, ny));
-      await ctrl.setExposureMode(ExposureMode.auto);
-      await ctrl.setExposurePoint(Offset(nx, ny));
+      // In PRO mode keep exposure manual — only move the focus point.
+      if (!isPro) {
+        await ctrl.setExposureMode(ExposureMode.auto);
+        await ctrl.setExposurePoint(Offset(nx, ny));
+      }
     } catch (_) {}
     setState(() {
       _focusIndicatorPos = localPos;
@@ -401,6 +405,11 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     }
     final xfile =
         await ref.read(cameraControllerProvider.notifier).capture();
+    // Release the AVCaptureDevice lock held since setManualExposure (iOS only).
+    // Must be called after takePicture so the lock protects the full capture.
+    if (settings.mode == CaptureMode.manual) {
+      await ManualCameraService.instance.unlockAfterCapture();
+    }
     setState(() => _isCapturing = false);
     if (xfile == null) return;
     final rotAngle = _captureRotationDegrees();
@@ -515,17 +524,28 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     } catch (_) {}
   }
 
+  // Convert decimal degrees to the "d/1 m/1 s*100/100" rational DMS string
+  // that native_exif / EXIF spec expects for GPSLatitude / GPSLongitude.
+  static String _decimalToDmsRational(double decimal) {
+    final abs = decimal.abs();
+    final deg = abs.toInt();
+    final minF = (abs - deg) * 60;
+    final min = minF.toInt();
+    final secX100 = ((minF - min) * 6000).round();
+    return '$deg/1 $min/1 $secX100/100';
+  }
+
   Future<void> _addGpsExif(String path, Position? gps) async {
     if (gps == null) return;
     try {
       final attrs = <String, String>{
-        'GPSLatitude': gps.latitude.abs().toStringAsFixed(7),
+        'GPSLatitude': _decimalToDmsRational(gps.latitude),
         'GPSLatitudeRef': gps.latitude >= 0 ? 'N' : 'S',
-        'GPSLongitude': gps.longitude.abs().toStringAsFixed(7),
+        'GPSLongitude': _decimalToDmsRational(gps.longitude),
         'GPSLongitudeRef': gps.longitude >= 0 ? 'E' : 'W',
       };
       if (gps.altitude != 0) {
-        attrs['GPSAltitude'] = gps.altitude.abs().toStringAsFixed(1);
+        attrs['GPSAltitude'] = '${(gps.altitude.abs() * 100).round()}/100';
         attrs['GPSAltitudeRef'] = gps.altitude >= 0 ? '0' : '1';
       }
       final exif = await Exif.fromPath(path);
@@ -579,15 +599,17 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       }
     });
 
-    // Preview aspect ratio: natural sensor ratio (3:4 portrait, 4:3 landscape).
-    // 16:9 selection shows a crop overlay; the final image is cropped on capture.
-    final previewAspect = isLandscape ? 4.0 / 3.0 : 3.0 / 4.0;
-
     final activeController = cameraState.valueOrNull;
 
+    final isFrontCamera = activeController?.description.lensDirection ==
+        CameraLensDirection.front;
     Widget previewWidget = cameraState.when(
       data: (ctrl) => ctrl != null && ctrl.value.isInitialized
-          ? _CameraPreview(controller: ctrl, settings: settings)
+          ? _CameraPreview(
+              controller: ctrl,
+              settings: settings,
+              mirrorHorizontally: _mirrorFront && isFrontCamera,
+            )
           : const _LoadingView(),
       loading: () => const _LoadingView(),
       error: (e, _) => _ErrorView(error: e.toString()),
@@ -617,6 +639,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                 _updateSettings((s) => s.copyWith(whiteBalanceKelvin: k)),
             showGrid: _showGrid,
             onGridToggle: () => setState(() => _showGrid = !_showGrid),
+            showMirror: _mirrorFront,
+            onMirrorToggle: () => setState(() => _mirrorFront = !_mirrorFront),
           )
         : const SizedBox.shrink();
 
@@ -722,67 +746,75 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     );
 
     if (isLandscape) {
-      // ── Landscape: preview fills safe area height, controls overlay ─
+      // ── Landscape: left rail (HUD) + full-height preview + right rail (controls)
+      // This gives a much larger preview than the old centered AspectRatio approach.
       return Scaffold(
         backgroundColor: Colors.black,
-        body: Stack(
-          children: [
-            // Preview centred in safe area, full height
-            SafeArea(
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: previewAspect,
-                  child: previewStack,
+        body: SafeArea(
+          child: Stack(
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Left rail — SS / APT / LEICA / WB / ISO
+                  _LandscapeLeftRail(
+                    settings: settings,
+                    activePanel: _activeTopPanel,
+                    onPanelTap: _toggleTopPanel,
+                    liveIso: _liveIso,
+                    liveShutterDenom: _liveShutterDenom,
+                  ),
+                  // Centre — preview (previewStack already handles gestures,
+                  // focus indicator, zoom indicator, grid, and crop overlay)
+                  Expanded(
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        previewStack,
+                        // Display bar overlaid at bottom when a panel is open
+                        if (_activeTopPanel != null)
+                          Positioned(
+                            bottom: 0, left: 0, right: 0,
+                            child: Container(
+                              color: Colors.black.withValues(alpha: 0.88),
+                              child: displayBarWidget,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  // Right rail — thumbnail / mode / shutter / flip / gear
+                  _LandscapeRightRail(
+                    settings: settings,
+                    isCapturing: _isCapturing,
+                    lastCapturePath: _lastCapturePath,
+                    onCapture: _capture,
+                    onSettingsChanged: _updateSettings,
+                    onSwitchCamera: () =>
+                        ref.read(cameraControllerProvider.notifier).switchCamera(),
+                    onOpenGallery: _openGallery,
+                    onGearTap: () => setState(() {
+                      _showGearPanel = !_showGearPanel;
+                      if (_showGearPanel) _activeTopPanel = null;
+                    }),
+                  ),
+                ],
+              ),
+              // Gear overlay spans the whole screen
+              if (_showGearPanel)
+                Positioned.fill(
+                  child: _GearPanel(
+                    settings: settings,
+                    onDismiss: () => setState(() => _showGearPanel = false),
+                    onSettingsChanged: _updateSettings,
+                    onPanelActivate: (panel) => setState(() {
+                      _showGearPanel = false;
+                      _activeTopPanel = panel;
+                    }),
+                  ),
                 ),
-              ),
-            ),
-            // Top HUD overlay
-            Positioned(
-              top: 0, left: 0, right: 0,
-              child: SafeArea(
-                bottom: false,
-                child: Container(
-                  color: Colors.black.withValues(alpha: 0.55),
-                  child: topHudWidget,
-                ),
-              ),
-            ),
-            // Display bar overlay (always visible, above bottom bar)
-            Positioned(
-              bottom: 80,
-              left: 0,
-              right: 0,
-              child: Container(
-                color: Colors.black.withValues(alpha: 0.55),
-                child: displayBarWidget,
-              ),
-            ),
-            // Zoom buttons — overlaid above the display bar
-            Positioned(
-              bottom: 124,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: _ZoomButtons(
-                  availableZooms: _availableZooms,
-                  currentZoom: _currentZoom,
-                  onZoom: _setZoom,
-                ),
-              ),
-            ),
-            // Bottom bar overlay
-            Positioned(
-              bottom: 0, left: 0, right: 0,
-              child: SafeArea(
-                top: false,
-                child: Container(
-                  color: Colors.black.withValues(alpha: 0.55),
-                  child: bottomBarWidget,
-                ),
-              ),
-            ),
-            ?gearOverlay,
-          ],
+            ],
+          ),
         ),
       );
     }
@@ -858,11 +890,15 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 
 // ── Camera Preview ────────────────────────────────────────────────────────────
 class _CameraPreview extends StatelessWidget {
-  const _CameraPreview(
-      {required this.controller, required this.settings});
+  const _CameraPreview({
+    required this.controller,
+    required this.settings,
+    this.mirrorHorizontally = false,
+  });
 
   final CameraController controller;
   final CaptureSettings settings;
+  final bool mirrorHorizontally;
 
   static List<double> _wbMatrix(int kelvin) {
     final t = (kelvin - 5500) / 4500.0;
@@ -926,7 +962,7 @@ class _CameraPreview extends StatelessWidget {
       );
     }
 
-    return ClipRect(
+    Widget preview = ClipRect(
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -942,6 +978,11 @@ class _CameraPreview extends StatelessWidget {
         ],
       ),
     );
+
+    if (mirrorHorizontally) {
+      preview = Transform.scale(scaleX: -1, child: preview);
+    }
+    return preview;
   }
 }
 
@@ -1314,6 +1355,8 @@ class _DisplayBar extends StatelessWidget {
     required this.onWbChanged,
     required this.showGrid,
     required this.onGridToggle,
+    required this.showMirror,
+    required this.onMirrorToggle,
   });
 
   final _TopPanel panel;
@@ -1322,6 +1365,8 @@ class _DisplayBar extends StatelessWidget {
   final ValueChanged<int> onWbChanged;
   final bool showGrid;
   final VoidCallback onGridToggle;
+  final bool showMirror;
+  final VoidCallback onMirrorToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -1349,20 +1394,33 @@ class _DisplayBar extends StatelessWidget {
             settings: settings,
             onSettingsChanged: onSettingsChanged,
           ),
-        _TopPanel.apt => Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: ExposureWheel(
-              values: _apertureValues
-                  .map((v) => 'f/${v.toStringAsFixed(1)}')
-                  .toList(),
-              selectedIndex: _apertureValues
-                  .indexWhere((v) => (v - settings.aperture).abs() < 0.05)
-                  .clamp(0, _apertureValues.length - 1),
-              onChanged: (i) => onSettingsChanged(
-                  (s) => s.copyWith(aperture: _apertureValues[i])),
-              label: 'APERTURE',
-            ),
-          ),
+        _TopPanel.apt => settings.mode == CaptureMode.auto
+            ? const Padding(
+                padding: EdgeInsets.symmetric(vertical: 10),
+                child: Center(
+                  child: Text(
+                    'AUTO — SS and APT controlled automatically',
+                    style: TextStyle(
+                        color: LeicaColors.textSecondary,
+                        fontSize: 10,
+                        letterSpacing: 0.5),
+                  ),
+                ),
+              )
+            : Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: ExposureWheel(
+                  values: _apertureValues
+                      .map((v) => 'f/${v.toStringAsFixed(1)}')
+                      .toList(),
+                  selectedIndex: _apertureValues
+                      .indexWhere((v) => (v - settings.aperture).abs() < 0.05)
+                      .clamp(0, _apertureValues.length - 1),
+                  onChanged: (i) => onSettingsChanged(
+                      (s) => s.copyWith(aperture: _apertureValues[i])),
+                  label: 'APERTURE',
+                ),
+              ),
         _TopPanel.iso => _IsoPanel(
             settings: settings,
             onSettingsChanged: onSettingsChanged,
@@ -1371,7 +1429,12 @@ class _DisplayBar extends StatelessWidget {
             settings: settings,
             onSettingsChanged: onSettingsChanged,
           ),
-        _TopPanel.view => _ViewPanel(showGrid: showGrid, onGridToggle: onGridToggle),
+        _TopPanel.view => _ViewPanel(
+            showGrid: showGrid,
+            onGridToggle: onGridToggle,
+            showMirror: showMirror,
+            onMirrorToggle: onMirrorToggle,
+          ),
         _TopPanel.timer => _TimerPanel(
             settings: settings,
             onSettingsChanged: onSettingsChanged,
@@ -1586,9 +1649,16 @@ class _IsoPanel extends StatelessWidget {
 
 // ── View panel ────────────────────────────────────────────────────────────────
 class _ViewPanel extends StatelessWidget {
-  const _ViewPanel({required this.showGrid, required this.onGridToggle});
+  const _ViewPanel({
+    required this.showGrid,
+    required this.onGridToggle,
+    required this.showMirror,
+    required this.onMirrorToggle,
+  });
   final bool showGrid;
   final VoidCallback onGridToggle;
+  final bool showMirror;
+  final VoidCallback onMirrorToggle;
 
   @override
   Widget build(BuildContext context) {
@@ -1614,9 +1684,9 @@ class _ViewPanel extends StatelessWidget {
           _ViewChip(
             icon: Icons.flip_outlined,
             label: 'MIRROR',
-            enabled: false,
-            soon: true,
-            onTap: () {},
+            enabled: showMirror,
+            soon: false,
+            onTap: onMirrorToggle,
           ),
         ],
       ),
@@ -1900,6 +1970,200 @@ class _BottomIconBtn extends StatelessWidget {
   }
 }
 
+// ── Landscape rails ───────────────────────────────────────────────────────────
+// Left rail: vertical column of SS / APT / LEICA / WB / ISO buttons.
+class _LandscapeLeftRail extends StatelessWidget {
+  const _LandscapeLeftRail({
+    required this.settings,
+    required this.activePanel,
+    required this.onPanelTap,
+    this.liveIso = 0,
+    this.liveShutterDenom = 0,
+  });
+
+  final CaptureSettings settings;
+  final _TopPanel? activePanel;
+  final void Function(_TopPanel) onPanelTap;
+  final int liveIso;
+  final int liveShutterDenom;
+
+  @override
+  Widget build(BuildContext context) {
+    final isAuto = settings.mode == CaptureMode.auto;
+    final ssStr = (isAuto && liveShutterDenom > 0)
+        ? '1/$liveShutterDenom'
+        : settings.shutterSpeedLabel;
+    final isoRaw = (isAuto && liveIso > 0) ? liveIso : settings.iso;
+    final isoStr = '${_snapIso(isoRaw)}';
+
+    return Container(
+      width: 68,
+      color: Colors.black,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _LandscapeHudBtn(
+            label: 'SS',
+            value: ssStr,
+            active: activePanel == _TopPanel.ssApt,
+            onTap: () => onPanelTap(_TopPanel.ssApt),
+          ),
+          _LandscapeHudBtn(
+            label: 'APT',
+            value: settings.apertureLabel,
+            active: activePanel == _TopPanel.apt,
+            onTap: () => onPanelTap(_TopPanel.apt),
+          ),
+          // LEICA button
+          GestureDetector(
+            onTap: () {
+              HapticFeedback.selectionClick();
+              onPanelTap(_TopPanel.looks);
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              decoration: BoxDecoration(
+                color: (settings.leicaLookEnabled || activePanel == _TopPanel.looks)
+                    ? LeicaColors.red.withValues(alpha: 0.18)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: (settings.leicaLookEnabled || activePanel == _TopPanel.looks)
+                      ? LeicaColors.red.withValues(alpha: 0.55)
+                      : Colors.white30,
+                  width: 1,
+                ),
+              ),
+              child: Text(
+                'LEICA',
+                style: TextStyle(
+                  color: (settings.leicaLookEnabled || activePanel == _TopPanel.looks)
+                      ? LeicaColors.red
+                      : Colors.white54,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ),
+          ),
+          _LandscapeHudBtn(
+            label: 'WB',
+            value: settings.wbLabel,
+            active: activePanel == _TopPanel.wb,
+            onTap: () => onPanelTap(_TopPanel.wb),
+          ),
+          _LandscapeHudBtn(
+            label: 'ISO',
+            value: isoStr,
+            active: activePanel == _TopPanel.iso,
+            onTap: () => onPanelTap(_TopPanel.iso),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LandscapeHudBtn extends StatelessWidget {
+  const _LandscapeHudBtn({
+    required this.label,
+    required this.value,
+    required this.active,
+    required this.onTap,
+  });
+  final String label;
+  final String value;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+        decoration: BoxDecoration(
+          color: active ? LeicaColors.red.withValues(alpha: 0.18) : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+          border: active
+              ? Border.all(color: LeicaColors.red.withValues(alpha: 0.55), width: 1)
+              : null,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label,
+                style: const TextStyle(
+                    color: LeicaColors.textDisabled,
+                    fontSize: 7,
+                    letterSpacing: 1.2)),
+            const SizedBox(height: 2),
+            Text(value,
+                style: const TextStyle(
+                    color: LeicaColors.textPrimary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Right rail: vertical column of thumbnail / AUTO·PRO / shutter / flip / gear.
+class _LandscapeRightRail extends StatelessWidget {
+  const _LandscapeRightRail({
+    required this.settings,
+    required this.isCapturing,
+    required this.lastCapturePath,
+    required this.onCapture,
+    required this.onSettingsChanged,
+    required this.onSwitchCamera,
+    required this.onOpenGallery,
+    required this.onGearTap,
+  });
+
+  final CaptureSettings settings;
+  final bool isCapturing;
+  final String? lastCapturePath;
+  final VoidCallback onCapture;
+  final void Function(CaptureSettings Function(CaptureSettings)) onSettingsChanged;
+  final VoidCallback onSwitchCamera;
+  final VoidCallback onOpenGallery;
+  final VoidCallback onGearTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 76,
+      color: Colors.black,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          _ThumbnailPreview(path: lastCapturePath, onTap: onOpenGallery),
+          _ModePair(
+            settings: settings,
+            onModeChanged: (mode) =>
+                onSettingsChanged((s) => s.copyWith(mode: mode)),
+          ),
+          ShutterButton(onPressed: onCapture, isCapturing: isCapturing),
+          _BottomIconBtn(icon: Icons.flip_camera_ios, onTap: onSwitchCamera),
+          _BottomIconBtn(icon: Icons.settings, onTap: onGearTap),
+        ],
+      ),
+    );
+  }
+}
+
 // ── Gear Panel ────────────────────────────────────────────────────────────────
 // Slides up from the bottom as a semi-transparent overlay, 3×3 grid of buttons.
 class _GearPanel extends StatelessWidget {
@@ -1955,6 +2219,7 @@ class _GearPanel extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    // Row 1: FLASH · TIMER · ASPECT
                     _GearRow(children: [
                       _GearBtn(
                         icon: _flashIcon(settings.flashMode),
@@ -1970,13 +2235,6 @@ class _GearPanel extends StatelessWidget {
                         },
                       ),
                       _GearBtn(
-                        icon: Icons.grid_on,
-                        label: 'VIEW',
-                        sublabel: 'GRID/LVL',
-                        active: false,
-                        onTap: () => onPanelActivate(_TopPanel.view),
-                      ),
-                      _GearBtn(
                         icon: Icons.timer_outlined,
                         label: 'TIMER',
                         sublabel: settings.timerSeconds == 0
@@ -1985,46 +2243,6 @@ class _GearPanel extends StatelessWidget {
                         active: settings.timerSeconds > 0,
                         onTap: () => onPanelActivate(_TopPanel.timer),
                       ),
-                    ]),
-                    const SizedBox(height: 12),
-                    _GearRow(children: [
-                      _GearBtn(
-                        icon: Icons.shutter_speed,
-                        label: 'SS',
-                        sublabel: settings.shutterSpeedLabel,
-                        active: settings.mode == CaptureMode.manual,
-                        onTap: () {
-                          if (settings.mode != CaptureMode.manual) {
-                            onSettingsChanged(
-                                (s) => s.copyWith(mode: CaptureMode.manual));
-                          }
-                          onPanelActivate(_TopPanel.ssApt);
-                        },
-                      ),
-                      _GearBtn(
-                        icon: Icons.palette_outlined,
-                        label: 'LOOKS',
-                        sublabel: settings.selectedLook.displayName
-                            .toUpperCase(),
-                        active: false,
-                        onTap: () => onPanelActivate(_TopPanel.looks),
-                      ),
-                      _GearBtn(
-                        icon: Icons.camera_outlined,
-                        label: 'APT',
-                        sublabel: settings.apertureLabel,
-                        active: settings.mode == CaptureMode.aperture,
-                        onTap: () {
-                          onSettingsChanged((s) => s.copyWith(
-                              mode: s.mode == CaptureMode.aperture
-                                  ? CaptureMode.auto
-                                  : CaptureMode.aperture));
-                          onPanelActivate(_TopPanel.apt);
-                        },
-                      ),
-                    ]),
-                    const SizedBox(height: 12),
-                    _GearRow(children: [
                       _GearBtn(
                         icon: Icons.aspect_ratio,
                         label: 'ASPECT',
@@ -2042,6 +2260,17 @@ class _GearPanel extends StatelessWidget {
                           onSettingsChanged(
                               (s) => s.copyWith(aspectRatio: next));
                         },
+                      ),
+                    ]),
+                    const SizedBox(height: 12),
+                    // Row 2: VIEW · RAW · QUAL
+                    _GearRow(children: [
+                      _GearBtn(
+                        icon: Icons.grid_on,
+                        label: 'VIEW',
+                        sublabel: 'GRID/LVL',
+                        active: false,
+                        onTap: () => onPanelActivate(_TopPanel.view),
                       ),
                       _GearBtn(
                         icon: settings.rawEnabled

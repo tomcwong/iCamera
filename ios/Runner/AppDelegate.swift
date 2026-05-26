@@ -6,6 +6,12 @@ import MobileCoreServices
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
+  // Tracks whether we hold a lockForConfiguration on the back camera.
+  // Kept locked from after setManualExposure completes until unlockAfterCapture
+  // is called, so nothing (Flutter plugin flash setup, subject-area callbacks)
+  // can reset the custom ISO/shutter between set and capture.
+  private var _holdingManualLock = false
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -34,6 +40,9 @@ import MobileCoreServices
           return
         }
         self?.setManualExposure(iso: iso, shutterDenom: shutterDenom, result: result)
+
+      case "unlockAfterCapture":
+        self?.unlockAfterCapture(result: result)
 
       case "setAutoExposure":
         self?.setAutoExposure(result: result)
@@ -72,16 +81,22 @@ import MobileCoreServices
 
   private func setManualExposure(iso: Int, shutterDenom: Int, result: @escaping FlutterResult) {
     guard let device = backCamera() else { result(nil); return }
+    // Release any previously held manual lock before acquiring a new one.
+    if _holdingManualLock {
+      device.unlockForConfiguration()
+      _holdingManualLock = false
+    }
     do {
       try device.lockForConfiguration()
       let duration = CMTimeMake(value: 1, timescale: Int32(max(1, shutterDenom)))
-      let minIso = device.activeFormat.minISO
-      let maxIso = device.activeFormat.maxISO
-      let clampedIso = min(max(Float(iso), minIso), maxIso)
-      // Completion handler fires when the sensor has actually applied the new
-      // ISO and shutter — only then do we unlock and signal Dart to proceed.
-      device.setExposureModeCustom(duration: duration, iso: clampedIso) { _ in
-        device.unlockForConfiguration()
+      let clampedIso = min(max(Float(iso), device.activeFormat.minISO), device.activeFormat.maxISO)
+      // Completion handler fires when sensor has applied the new ISO/shutter.
+      // We intentionally do NOT unlock here — keeping the lock prevents anything
+      // (Flutter plugin callbacks, subject-area notifications) from resetting the
+      // exposure mode before the photo is captured.
+      // Dart MUST call unlockAfterCapture after takePicture.
+      device.setExposureModeCustom(duration: duration, iso: clampedIso) { [weak self] _ in
+        self?._holdingManualLock = true
         result(nil)
       }
     } catch {
@@ -89,8 +104,22 @@ import MobileCoreServices
     }
   }
 
+  // Called by Dart after ctrl.takePicture() returns in PRO mode.
+  private func unlockAfterCapture(result: @escaping FlutterResult) {
+    if _holdingManualLock, let device = backCamera() {
+      device.unlockForConfiguration()
+      _holdingManualLock = false
+    }
+    result(nil)
+  }
+
   private func setAutoExposure(result: @escaping FlutterResult) {
     guard let device = backCamera() else { result(nil); return }
+    // Release manual lock if held, then switch to continuous auto.
+    if _holdingManualLock {
+      device.unlockForConfiguration()
+      _holdingManualLock = false
+    }
     do {
       try device.lockForConfiguration()
       if device.isExposureModeSupported(.continuousAutoExposure) {

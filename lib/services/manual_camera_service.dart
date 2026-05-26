@@ -89,6 +89,15 @@ class ManualCameraService {
     }
   }
 
+  /// Releases the AVCaptureDevice lock held since setManualExposure.
+  /// Must be called after ctrl.takePicture() when in PRO mode on iOS.
+  Future<void> unlockAfterCapture() async {
+    if (!Platform.isIOS) return;
+    try {
+      await _ch.invokeMethod<void>('unlockAfterCapture');
+    } catch (_) {}
+  }
+
   /// Returns the optical zoom switch-over factors for the back camera on iOS.
   /// Always includes 1.0. Ultra-wide adds 0.5; telephoto adds 2×/3×/5× etc.
   /// Returns [1.0] on Android or on error.
