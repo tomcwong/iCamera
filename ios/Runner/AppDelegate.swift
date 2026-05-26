@@ -47,12 +47,14 @@ import MobileCoreServices
       case "getAvailableZoomFactors":
         self?.getAvailableZoomFactors(result: result)
 
-      case "convertJpegToHeif":
+      case "encodeRgbaToHeif":
         guard let args = call.arguments as? [String: Any],
-              let flutterData = args["jpeg"] as? FlutterStandardTypedData
+              let rgbaData = args["rgba"] as? FlutterStandardTypedData,
+              let width = args["width"] as? Int,
+              let height = args["height"] as? Int
         else { result(nil); return }
         let quality = args["quality"] as? Double ?? 0.9
-        self?.convertJpegToHeif(jpegData: flutterData.data, quality: quality, result: result)
+        self?.encodeRgbaToHeif(rgbaData: rgbaData.data, width: width, height: height, quality: quality, result: result)
 
       default:
         result(FlutterMethodNotImplemented)
@@ -115,13 +117,21 @@ import MobileCoreServices
     result(["iso": iso, "shutterDenom": shutterDenom, "ev": ev])
   }
 
-  private func convertJpegToHeif(jpegData: Data, quality: Double, result: @escaping FlutterResult) {
-    guard let cgImage = UIImage(data: jpegData)?.cgImage else { result(nil); return }
+  private func encodeRgbaToHeif(rgbaData: Data, width: Int, height: Int, quality: Double, result: @escaping FlutterResult) {
+    let bytesPerRow = width * 4
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+    guard let provider = CGDataProvider(data: rgbaData as CFData),
+          let cgImage = CGImage(
+            width: width, height: height,
+            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+            space: colorSpace, bitmapInfo: bitmapInfo,
+            provider: provider, decode: nil,
+            shouldInterpolate: false, intent: .defaultIntent)
+    else { result(nil); return }
     let data = NSMutableData()
-    let uti = "public.heic" as CFString
-    guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, uti, 1, nil) else {
-      result(nil); return
-    }
+    guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, "public.heic" as CFString, 1, nil)
+    else { result(nil); return }
     let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
     CGImageDestinationAddImage(dest, cgImage, options as CFDictionary)
     guard CGImageDestinationFinalize(dest) else { result(nil); return }

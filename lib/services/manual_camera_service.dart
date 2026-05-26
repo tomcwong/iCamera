@@ -68,14 +68,19 @@ class ManualCameraService {
     } catch (_) {}
   }
 
-  /// Converts a JPEG to HEIF (H.265) via native iOS ImageIO.
+  /// Encodes raw RGBA pixels directly to HEIF (H.265) via native iOS ImageIO.
+  /// Avoids any intermediate JPEG step — single lossy encode from processed pixels.
   /// Returns null on Android or on failure (caller should fall back to JPEG).
-  Future<Uint8List?> convertJpegToHeif(Uint8List jpegBytes,
-      {double quality = 0.9}) async {
+  Future<Uint8List?> encodePixelsToHeif(
+      Uint8List rgba, int width, int height, {double quality = 0.9}) async {
     if (!Platform.isIOS) return null;
     try {
-      final raw = await _ch.invokeMethod<dynamic>(
-          'convertJpegToHeif', {'jpeg': jpegBytes, 'quality': quality});
+      final raw = await _ch.invokeMethod<dynamic>('encodeRgbaToHeif', {
+        'rgba': rgba,
+        'width': width,
+        'height': height,
+        'quality': quality,
+      });
       if (raw == null) return null;
       if (raw is Uint8List) return raw;
       return Uint8List.fromList((raw as List).cast<int>());

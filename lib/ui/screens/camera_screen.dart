@@ -478,33 +478,35 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
             segmentationMask: mask,
           );
 
-      final jpegQuality = settings.quality == CaptureQuality.high ||
-              settings.quality == CaptureQuality.heif
-          ? 97
-          : 85;
-      final jpegBytes = await compute(_encodeRgbaToJpeg, {
-        'rgba': processedRgba,
-        'width': width,
-        'height': height,
-        'quality': jpegQuality,
-      });
-
-      // Preserve original camera EXIF (real ISO/SS/FL) via pure-Dart APP1 injection.
-      // Patch orientation to 1 because bakeOrientation already rotated the pixels.
-      final app1Raw = _extractApp1Exif(rawBytes);
-      final app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
-      final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
-
       String path;
       if (settings.quality == CaptureQuality.heif) {
+        // Encode processed pixels directly to HEIF — no intermediate JPEG step.
         final heifBytes = await ManualCameraService.instance
-            .convertJpegToHeif(finalJpeg, quality: 0.9);
+            .encodePixelsToHeif(processedRgba, width, height, quality: 0.9);
         if (heifBytes != null) {
           path = await DngWriter.instance.saveProcessedHeif(heifBytes);
         } else {
+          // Fallback: HEIF unavailable (Android / error), save as JPEG.
+          final jpegBytes = await compute(_encodeRgbaToJpeg,
+              {'rgba': processedRgba, 'width': width, 'height': height, 'quality': 85});
+          final app1Raw = _extractApp1Exif(rawBytes);
+          final app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
+          final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
           path = await DngWriter.instance.saveProcessedJpeg(finalJpeg);
         }
       } else {
+        final jpegQuality = settings.quality == CaptureQuality.high ? 97 : 85;
+        final jpegBytes = await compute(_encodeRgbaToJpeg, {
+          'rgba': processedRgba,
+          'width': width,
+          'height': height,
+          'quality': jpegQuality,
+        });
+        // Preserve original camera EXIF (real ISO/SS/FL) via pure-Dart APP1 injection.
+        // Patch orientation to 1 because bakeOrientation already rotated the pixels.
+        final app1Raw = _extractApp1Exif(rawBytes);
+        final app1 = app1Raw != null ? _patchExifOrientation1(app1Raw) : null;
+        final finalJpeg = app1 != null ? _injectApp1Exif(jpegBytes, app1) : jpegBytes;
         path = await DngWriter.instance.saveProcessedJpeg(finalJpeg);
       }
       // Best-effort GPS addition via native_exif.
