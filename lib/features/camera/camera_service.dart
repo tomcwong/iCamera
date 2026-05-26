@@ -81,11 +81,15 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
             orElse: () => ctrl.description,
           );
           if (uw.name != ctrl.description.name) {
-            state = const AsyncValue.loading();
-            await _initController(uw);
-            return 0.5;
+            try {
+              state = const AsyncValue.loading();
+              await _initController(uw);
+              return 0.5;
+            } catch (_) {
+              // Ultrawide init failed — fall through, zoom will be clamped to 1.0
+            }
           }
-          return zoom;
+          // Ultrawide not found or failed; fall through to clamp
         }
         if (zoom >= 1.0 && isUltrawide) {
           final wide = _allCameras.firstWhere(

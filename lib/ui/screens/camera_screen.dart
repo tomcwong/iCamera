@@ -321,18 +321,20 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     } catch (_) {}
   }
 
-  Future<void> _setZoom(double zoom) async {
+  Future<void> _setZoom(double zoom, {bool showIndicator = false}) async {
     final applied =
         await ref.read(cameraControllerProvider.notifier).setZoomLevel(zoom);
     if (!mounted) return;
     setState(() {
       _currentZoom = applied;
-      _zoomIndicatorVisible = true;
+      if (showIndicator) _zoomIndicatorVisible = true;
     });
-    _zoomHideTimer?.cancel();
-    _zoomHideTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _zoomIndicatorVisible = false);
-    });
+    if (showIndicator) {
+      _zoomHideTimer?.cancel();
+      _zoomHideTimer = Timer(const Duration(seconds: 2), () {
+        if (mounted) setState(() => _zoomIndicatorVisible = false);
+      });
+    }
   }
 
   Future<void> _tapToFocus(Offset localPos) async {
@@ -622,7 +624,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       onScaleStart: (_) => _baseZoom = _currentZoom,
       onScaleUpdate: (d) {
         if (d.pointerCount >= 2) {
-          _setZoom((_baseZoom * d.scale).clamp(1.0, 10.0));
+          _setZoom((_baseZoom * d.scale).clamp(1.0, 10.0),
+              showIndicator: true);
         }
       },
       onTapUp: (d) => _tapToFocus(d.localPosition),
@@ -885,17 +888,25 @@ class _CameraPreview extends StatelessWidget {
       );
     }
 
+    // Always apply WB tint; additionally apply look preview matrix when Leica is ON.
+    Widget graded = ColorFiltered(
+      colorFilter: ColorFilter.matrix(
+          _CameraPreview._wbMatrix(settings.whiteBalanceKelvin)),
+      child: cameraChild,
+    );
+    if (settings.leicaLookEnabled) {
+      graded = ColorFiltered(
+        colorFilter:
+            ColorFilter.matrix(settings.selectedLook.previewMatrix),
+        child: graded,
+      );
+    }
+
     return ClipRect(
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // Live preview is always clean — no color grading applied.
-          // WB matrix still applied to show temperature feedback in real-time.
-          ColorFiltered(
-            colorFilter: ColorFilter.matrix(
-                _CameraPreview._wbMatrix(settings.whiteBalanceKelvin)),
-            child: cameraChild,
-          ),
+          graded,
           Positioned(
             top: 8,
             right: 8,
