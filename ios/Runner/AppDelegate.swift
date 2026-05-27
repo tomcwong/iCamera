@@ -9,6 +9,7 @@ import MobileCoreServices
 
   private var _proPhotoOutput: AVCapturePhotoOutput?
   private var _proCapturePending: FlutterResult?
+  private weak var _captureSession: AVCaptureSession?
 
   override func application(
     _ application: UIApplication,
@@ -80,12 +81,18 @@ import MobileCoreServices
       }
     }
 
-    // Observe the Flutter camera plugin's session start so we can find its
-    // AVCapturePhotoOutput for native PRO captures (bypasses Smart HDR).
+    // Observe the Flutter camera plugin's session start/stop so we can find
+    // its AVCapturePhotoOutput for native PRO captures (bypasses Smart HDR).
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(_sessionStarted(_:)),
       name: .AVCaptureSessionDidStartRunning,
+      object: nil
+    )
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(_sessionStopped(_:)),
+      name: .AVCaptureSessionDidStopRunning,
       object: nil
     )
 
@@ -95,6 +102,7 @@ import MobileCoreServices
   @objc private func _sessionStarted(_ note: Notification) {
     guard let session = note.object as? AVCaptureSession else { return }
     DispatchQueue.main.async { [weak self] in
+      self?._captureSession = session
       for output in session.outputs {
         if let photoOut = output as? AVCapturePhotoOutput {
           self?._proPhotoOutput = photoOut
@@ -104,12 +112,24 @@ import MobileCoreServices
     }
   }
 
+  @objc private func _sessionStopped(_ note: Notification) {
+    guard let session = note.object as? AVCaptureSession else { return }
+    DispatchQueue.main.async { [weak self] in
+      if self?._captureSession === session {
+        self?._proPhotoOutput = nil
+        self?._captureSession = nil
+      }
+    }
+  }
+
   // MARK: – Native PRO capture
 
   // Captures a single JPEG bypassing AVCapturePhotoOutput's Smart HDR /
   // virtual-device fusion pipeline, so the sensor's manual ISO/SS is honoured.
   private func captureProPhoto(result: @escaping FlutterResult) {
-    guard let photoOutput = _proPhotoOutput else { result(nil); return }
+    guard let photoOutput = _proPhotoOutput,
+          let session = _captureSession,
+          session.isRunning else { result(nil); return }
     guard _proCapturePending == nil else { result(nil); return }
 
     let settings: AVCapturePhotoSettings
@@ -150,13 +170,11 @@ import MobileCoreServices
 
   private func setManualExposure(iso: Int, shutterDenom: Int, result: @escaping FlutterResult) {
     guard let device = backCamera() else { result(nil); return }
+    guard device.isExposureModeSupported(.custom) else { result(nil); return }
     do {
       try device.lockForConfiguration()
       let duration = CMTimeMake(value: 1, timescale: Int32(max(1, shutterDenom)))
       let clampedIso = min(max(Float(iso), device.activeFormat.minISO), device.activeFormat.maxISO)
-      // Completion fires when the sensor has applied the new ISO/shutter.
-      // Unlock immediately — .custom mode persists after unlock, so the photo
-      // capture will use these settings. The Flutter plugin can now lock freely.
       device.setExposureModeCustom(duration: duration, iso: clampedIso) { _ in
         device.unlockForConfiguration()
         result(nil)
@@ -295,9 +313,9 @@ import MobileCoreServices
 
 // MARK: – PRO capture delegate
 extension AppDelegate: AVCapturePhotoCaptureDelegate {
-  func photoOutput(_ output: AVCapturePhotoOutput,
-                   didFinishProcessingPhoto photo: AVCapturePhoto,
-                   error: Error?) {
+  @objc func photoOutput(_ output: AVCapturePhotoOutput,
+                         didFinishProcessingPhoto photo: AVCapturePhoto,
+                         error: Error?) {
     guard let result = _proCapturePending else { return }
     _proCapturePending = nil
     guard error == nil, let data = photo.fileDataRepresentation() else {
