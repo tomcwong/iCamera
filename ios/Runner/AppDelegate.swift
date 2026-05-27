@@ -169,8 +169,10 @@ import MobileCoreServices
   }
 
   private func setManualExposure(iso: Int, shutterDenom: Int, result: @escaping FlutterResult) {
-    guard let device = backCamera() else { result(nil); return }
-    guard device.isExposureModeSupported(.custom) else { result(nil); return }
+    // iOS 26: virtual device (builtInDualWideCamera) throws NSException from
+    // setExposureModeCustom even though it previously worked. Fall back to the
+    // physical wide-angle camera which still supports .custom mode.
+    guard let device = cameraForExposure() else { result(nil); return }
     do {
       try device.lockForConfiguration()
       let duration = CMTimeMake(value: 1, timescale: Int32(max(1, shutterDenom)))
@@ -182,6 +184,16 @@ import MobileCoreServices
     } catch {
       result(nil)
     }
+  }
+
+  // Returns the best device for setExposureModeCustom.
+  // Tries the virtual device first (preserves multi-lens fusion), falls back to
+  // the physical wide-angle camera when the virtual device rejects .custom mode.
+  private func cameraForExposure() -> AVCaptureDevice? {
+    if let vDev = backCamera(), vDev.isExposureModeSupported(.custom) {
+      return vDev
+    }
+    return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
   }
 
   // No-op: lock is released inside the setManualExposure completion handler.
