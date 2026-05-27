@@ -43,11 +43,6 @@ class ControlsBar extends StatelessWidget {
         selected: settings.mode == CaptureMode.manual,
         onTap: () => onModeChanged(CaptureMode.manual),
       ),
-      _ModeChip(
-        label: 'APT',
-        selected: settings.mode == CaptureMode.aperture,
-        onTap: () => onModeChanged(CaptureMode.aperture),
-      ),
       _IconBtn(
         icon: _flashIcon(settings.flashMode),
         label: 'FLASH',
