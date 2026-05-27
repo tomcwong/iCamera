@@ -7,6 +7,9 @@ import MobileCoreServices
 @main
 @objc class AppDelegate: FlutterAppDelegate {
 
+  private var _proPhotoOutput: AVCapturePhotoOutput?
+  private var _proCapturePending: FlutterResult?
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -69,12 +72,58 @@ import MobileCoreServices
         let quality = args["quality"] as? Double ?? 0.9
         self?.encodeRgbaToHeif(rgbaData: rgbaData.data, width: width, height: height, quality: quality, result: result)
 
+      case "captureProPhoto":
+        self?.captureProPhoto(result: result)
+
       default:
         result(FlutterMethodNotImplemented)
       }
     }
 
+    // Observe the Flutter camera plugin's session start so we can find its
+    // AVCapturePhotoOutput for native PRO captures (bypasses Smart HDR).
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(_sessionStarted(_:)),
+      name: .AVCaptureSessionDidStartRunning,
+      object: nil
+    )
+
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  @objc private func _sessionStarted(_ note: Notification) {
+    guard let session = note.object as? AVCaptureSession else { return }
+    DispatchQueue.main.async { [weak self] in
+      for output in session.outputs {
+        if let photoOut = output as? AVCapturePhotoOutput {
+          self?._proPhotoOutput = photoOut
+          break
+        }
+      }
+    }
+  }
+
+  // MARK: – Native PRO capture
+
+  // Captures a single JPEG bypassing AVCapturePhotoOutput's Smart HDR /
+  // virtual-device fusion pipeline, so the sensor's manual ISO/SS is honoured.
+  private func captureProPhoto(result: @escaping FlutterResult) {
+    guard let photoOutput = _proPhotoOutput else { result(nil); return }
+    guard _proCapturePending == nil else { result(nil); return }
+
+    let settings: AVCapturePhotoSettings
+    if photoOutput.availablePhotoCodecTypes.contains(.jpeg) {
+      settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
+    } else {
+      settings = AVCapturePhotoSettings()
+    }
+    settings.isAutoVirtualDeviceFusionEnabled = false
+    if #available(iOS 13.0, *) {
+      settings.photoQualityPrioritization = .speed
+    }
+    _proCapturePending = result
+    photoOutput.capturePhoto(with: settings, delegate: self)
   }
 
   // MARK: – AVCaptureDevice helpers
@@ -241,5 +290,20 @@ import MobileCoreServices
     }
 
     result(factors.sorted())
+  }
+}
+
+// MARK: – PRO capture delegate
+extension AppDelegate: AVCapturePhotoCaptureDelegate {
+  func photoOutput(_ output: AVCapturePhotoOutput,
+                   didFinishProcessingPhoto photo: AVCapturePhoto,
+                   error: Error?) {
+    guard let result = _proCapturePending else { return }
+    _proCapturePending = nil
+    guard error == nil, let data = photo.fileDataRepresentation() else {
+      result(nil)
+      return
+    }
+    result(FlutterStandardTypedData(bytes: data))
   }
 }

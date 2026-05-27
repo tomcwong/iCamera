@@ -118,6 +118,21 @@ class ManualCameraService {
     } catch (_) {}
   }
 
+  /// Captures a single JPEG via native AVCapturePhotoOutput with Smart HDR and
+  /// virtual-device fusion disabled, so manual ISO/SS settings are honoured.
+  /// Returns null on failure — caller should fall back to ctrl.takePicture().
+  Future<Uint8List?> captureProPhoto() async {
+    if (!Platform.isIOS) return null;
+    try {
+      final raw = await _ch.invokeMethod<dynamic>('captureProPhoto');
+      if (raw == null) return null;
+      if (raw is Uint8List) return raw;
+      return Uint8List.fromList((raw as List).cast<int>());
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Returns the optical zoom switch-over factors for the back camera on iOS.
   /// Always includes 1.0. Ultra-wide adds 0.5; telephoto adds 2×/3×/5× etc.
   /// Returns [1.0] on Android or on error.

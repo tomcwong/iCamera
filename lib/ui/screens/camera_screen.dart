@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image/image.dart' as img;
 import 'package:native_exif/native_exif.dart';
+import 'package:path_provider/path_provider.dart';
 import '../../core/theme/leica_colors.dart';
 import '../../features/bokeh/segmentation_service.dart';
 import '../../features/camera/camera_service.dart';
@@ -401,20 +402,36 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       setState(() => _timerCountdown = 0);
     }
     setState(() => _isCapturing = true);
-    // Re-apply manual exposure right before capture — ensures the sensor has
-    // the correct ISO/SS even if something (lens switch, reinit) reset it.
-    if (settings.mode == CaptureMode.manual) {
+
+    XFile? xfile;
+
+    if (settings.mode == CaptureMode.manual && Platform.isIOS) {
+      // PRO mode on iOS: apply manual exposure then use our native capture path
+      // which sets isAutoVirtualDeviceFusionEnabled=false + photoQualityPrioritization=.speed
+      // so iOS cannot override ISO/SS with Smart HDR or Deep Fusion.
       await ref
           .read(cameraControllerProvider.notifier)
           .applyManualSettings(settings);
+      final bytes = await ManualCameraService.instance.captureProPhoto();
+      if (bytes != null) {
+        final dir = await getTemporaryDirectory();
+        final path =
+            '${dir.path}/icamera_pro_${DateTime.now().millisecondsSinceEpoch}.jpg';
+        await File(path).writeAsBytes(bytes);
+        xfile = XFile(path);
+      }
     }
-    final xfile =
-        await ref.read(cameraControllerProvider.notifier).capture();
-    // Release the AVCaptureDevice lock held since setManualExposure (iOS only).
-    // Must be called after takePicture so the lock protects the full capture.
-    if (settings.mode == CaptureMode.manual) {
-      await ManualCameraService.instance.unlockAfterCapture();
+
+    if (xfile == null) {
+      // AUTO mode, non-iOS PRO, or fallback when native capture fails.
+      if (settings.mode == CaptureMode.manual) {
+        await ref
+            .read(cameraControllerProvider.notifier)
+            .applyManualSettings(settings);
+      }
+      xfile = await ref.read(cameraControllerProvider.notifier).capture();
     }
+
     setState(() => _isCapturing = false);
     if (xfile == null) return;
     final rotAngle = _captureRotationDegrees();
