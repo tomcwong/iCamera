@@ -3,6 +3,7 @@ import UIKit
 import AVFoundation
 import ImageIO
 import MobileCoreServices
+import Vision
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
@@ -75,6 +76,14 @@ import MobileCoreServices
 
       case "captureProPhoto":
         self?.captureProPhoto(result: result)
+
+      case "getPersonMask":
+        guard let args = call.arguments as? [String: Any],
+              let path = args["path"] as? String,
+              let width = args["width"] as? Int,
+              let height = args["height"] as? Int
+        else { result(nil); return }
+        self?.getPersonMask(path: path, maskWidth: width, maskHeight: height, result: result)
 
       default:
         result(FlutterMethodNotImplemented)
@@ -283,6 +292,83 @@ import MobileCoreServices
     CGImageDestinationAddImage(dest, cgImage, options as CFDictionary)
     guard CGImageDestinationFinalize(dest) else { result(nil); return }
     result(FlutterStandardTypedData(bytes: data as Data))
+  }
+
+  // Runs VNGeneratePersonSegmentationRequest on the JPEG at [path] and returns
+  // a Float32 mask (1=person/sharp, 0=background/blur) resized to [maskWidth × maskHeight].
+  // Returns nil when no person is detected or on error. Runs on a background queue.
+  private func getPersonMask(path: String, maskWidth: Int, maskHeight: Int, result: @escaping FlutterResult) {
+    DispatchQueue.global(qos: .userInitiated).async {
+      let fileURL = URL(fileURLWithPath: path)
+      let request = VNGeneratePersonSegmentationRequest()
+      request.qualityLevel = .balanced
+      request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+
+      let handler = VNImageRequestHandler(url: fileURL, options: [:])
+      do {
+        try handler.perform([request])
+      } catch {
+        DispatchQueue.main.async { result(nil) }
+        return
+      }
+
+      guard let observation = request.results?.first else {
+        DispatchQueue.main.async { result(nil) }
+        return
+      }
+
+      let pixelBuffer = observation.pixelBuffer
+      CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+      defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+      guard let baseAddr = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+        DispatchQueue.main.async { result(nil) }
+        return
+      }
+      let srcW = CVPixelBufferGetWidth(pixelBuffer)
+      let srcH = CVPixelBufferGetHeight(pixelBuffer)
+      let srcBPR = CVPixelBufferGetBytesPerRow(pixelBuffer)
+      let src = baseAddr.assumingMemoryBound(to: UInt8.self)
+
+      // Reject if person coverage < 1% of the mask area
+      var personPixels = 0
+      for sy in 0..<srcH {
+        for sx in 0..<srcW {
+          if src[sy * srcBPR + sx] > 127 { personPixels += 1 }
+        }
+      }
+      guard personPixels > (srcW * srcH) / 100 else {
+        DispatchQueue.main.async { result(nil) }
+        return
+      }
+
+      // Bilinear resample to target dimensions
+      let count = maskWidth * maskHeight
+      var floatMask = [Float](repeating: 0, count: count)
+      let fSrcW = Float(srcW - 1)
+      let fSrcH = Float(srcH - 1)
+      for dy in 0..<maskHeight {
+        let fy = Float(dy) * fSrcH / Float(maskHeight - 1)
+        let sy0 = Int(fy); let sy1 = min(sy0 + 1, srcH - 1)
+        let ty = fy - Float(sy0)
+        for dx in 0..<maskWidth {
+          let fx = Float(dx) * fSrcW / Float(maskWidth - 1)
+          let sx0 = Int(fx); let sx1 = min(sx0 + 1, srcW - 1)
+          let tx = fx - Float(sx0)
+          let v00 = Float(src[sy0 * srcBPR + sx0]) / 255.0
+          let v01 = Float(src[sy0 * srcBPR + sx1]) / 255.0
+          let v10 = Float(src[sy1 * srcBPR + sx0]) / 255.0
+          let v11 = Float(src[sy1 * srcBPR + sx1]) / 255.0
+          floatMask[dy * maskWidth + dx] = (v00 * (1 - tx) + v01 * tx) * (1 - ty)
+                                         + (v10 * (1 - tx) + v11 * tx) * ty
+        }
+      }
+
+      let data = floatMask.withUnsafeBufferPointer { Data(buffer: $0) }
+      DispatchQueue.main.async {
+        result(FlutterStandardTypedData(float32: data))
+      }
+    }
   }
 
   private func getAvailableZoomFactors(result: @escaping FlutterResult) {

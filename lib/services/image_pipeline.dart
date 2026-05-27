@@ -75,7 +75,7 @@ class ImagePipeline {
     }
 
     // 3. Bokeh (Dart, aperture mode only)
-    if (settings.bokehEnabled && settings.mode == CaptureMode.aperture) {
+    if (settings.mode == CaptureMode.aperture) {
       final mask = segmentationMask ?? _centreWeightedMask(width, height);
       pixels = await bokehEngine.apply(
         rgba: pixels,

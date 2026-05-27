@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' show ImageFilter;
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:camera/camera.dart';
@@ -495,10 +496,10 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       final height = decodeResult['height'] as int;
 
       Float32List? mask;
-      if (settings.bokehEnabled && settings.mode == CaptureMode.aperture) {
+      if (settings.mode == CaptureMode.aperture) {
         mask = await ref
             .read(segmentationServiceProvider)
-            .segment(File(xfile.path));
+            .segment(File(xfile.path), width, height);
       }
 
       final processedRgba = await ref.read(imagePipelineProvider).process(
@@ -783,6 +784,14 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                     ),
                   ),
                 ),
+              if (settings.mode == CaptureMode.aperture)
+                IgnorePointer(
+                  child: _BokehPreviewOverlay(
+                    aperture: settings.aperture,
+                    focusCenter: _focusIndicatorPos,
+                    previewSize: cns.biggest,
+                  ),
+                ),
             ],
           );
         },
@@ -931,6 +940,60 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       ),
     );
   }
+}
+
+// ── Bokeh preview overlay (APT mode live DoF simulation) ─────────────────────
+// Blurs everything outside a circle centred on the tap-to-focus point.
+// sigma is aperture-driven: f/1.0 → 8.4, f/8.0 → 0.
+class _BokehPreviewOverlay extends StatelessWidget {
+  const _BokehPreviewOverlay({
+    required this.aperture,
+    required this.focusCenter,
+    required this.previewSize,
+  });
+
+  final double aperture;
+  final Offset? focusCenter;
+  final Size previewSize;
+
+  static double _sigma(double aperture) {
+    if (aperture >= 8.0) return 0;
+    return (8.0 - aperture) * 1.2; // f/1.0→8.4, f/2.8→6.2, f/5.6→2.9, f/8→0
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sigma = _sigma(aperture);
+    if (sigma < 0.3) return const SizedBox.shrink();
+    final center = focusCenter ??
+        Offset(previewSize.width / 2, previewSize.height / 2);
+    final radius = math.min(previewSize.width, previewSize.height) * 0.28;
+    return ClipPath(
+      clipper: _DonutClipper(center: center, radius: radius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+        child: Container(color: Colors.transparent),
+      ),
+    );
+  }
+}
+
+class _DonutClipper extends CustomClipper<Path> {
+  const _DonutClipper({required this.center, required this.radius});
+  final Offset center;
+  final double radius;
+
+  @override
+  Path getClip(Size size) {
+    return Path()
+      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
+      ..addOval(Rect.fromCircle(center: center, radius: radius))
+      ..fillType = PathFillType.evenOdd;
+  }
+
+  @override
+  bool shouldReclip(_DonutClipper old) =>
+      old.center != center || old.radius != radius;
 }
 
 // ── Camera Preview ────────────────────────────────────────────────────────────
@@ -1944,7 +2007,7 @@ class _ModePair extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 52,
+      height: 78,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
@@ -1962,6 +2025,14 @@ class _ModePair extends StatelessWidget {
             onTap: () {
               HapticFeedback.selectionClick();
               onModeChanged(CaptureMode.manual);
+            },
+          ),
+          _MiniModeChip(
+            label: 'APT',
+            selected: settings.mode == CaptureMode.aperture,
+            onTap: () {
+              HapticFeedback.selectionClick();
+              onModeChanged(CaptureMode.aperture);
             },
           ),
         ],

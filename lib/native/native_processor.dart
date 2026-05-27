@@ -129,8 +129,7 @@ class NativeProcessor {
     }
 
     // 8. Bokeh / depth-of-field blur ─────────────────────────────────────────
-    if (settings.bokehEnabled &&
-        settings.mode == CaptureMode.aperture &&
+    if (settings.mode == CaptureMode.aperture &&
         segmentationMask != null) {
       _ensureMaskBuf(pixels);
       _maskBuf.asTypedList(pixels).setAll(0, segmentationMask);

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
 /// Dart wrapper for [ManualCameraPlugin] (Android only).
@@ -128,6 +129,25 @@ class ManualCameraService {
       if (raw == null) return null;
       if (raw is Uint8List) return raw;
       return Uint8List.fromList((raw as List).cast<int>());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Runs Vision person segmentation on the JPEG at [jpegPath] and returns
+  /// a Float32 mask ([width × height] values, 1=person/sharp, 0=background/blur).
+  /// Returns null when no person is detected, on Android, or on any error.
+  Future<Float32List?> getPersonMask(String jpegPath, int width, int height) async {
+    if (!Platform.isIOS) return null;
+    try {
+      final raw = await _ch.invokeMethod<dynamic>('getPersonMask', {
+        'path': jpegPath,
+        'width': width,
+        'height': height,
+      });
+      if (raw == null) return null;
+      if (raw is Float32List) return raw;
+      return null;
     } catch (_) {
       return null;
     }
