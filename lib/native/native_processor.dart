@@ -1,11 +1,30 @@
 import 'dart:ffi';
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'native_bridge.dart';
 import 'lut_cache.dart';
 import '../features/camera/models/capture_settings.dart';
 import '../features/lens_simulation/lens_profile.dart';
+
+// Top-level so compute() can reference it. Creates a fresh, disposable
+// NativeProcessor inside the background isolate — no Pointers cross isolate
+// boundaries, each isolate allocates its own native buffers.
+Future<Uint8List> _runPipelineIsolate(Map<String, dynamic> args) async {
+  final proc = NativeProcessor._();
+  try {
+    return await proc.process(
+      rgba: args['rgba'] as Uint8List,
+      width: args['width'] as int,
+      height: args['height'] as int,
+      settings: args['settings'] as CaptureSettings,
+      segmentationMask: args['mask'] as Float32List?,
+    );
+  } finally {
+    proc.dispose();
+  }
+}
 
 final nativeProcessorProvider = Provider<NativeProcessor>((ref) {
   final p = NativeProcessor._();
@@ -171,6 +190,25 @@ class NativeProcessor {
     // f/1.0 → 55px, f/1.4 → 39px, f/2.8 → 20px, f/8.0 → 7px
     // Cap raised from 28 to 55 so wide apertures produce visibly strong blur.
     return (55.0 * (maxAperture / aperture)).clamp(0.0, 55.0).round();
+  }
+
+  /// Run the full pipeline in a background isolate so the heavy bokeh blur
+  /// (radius=55 on 6MP = ~1.5B ops) doesn't freeze the UI thread.
+  /// CaptureSettings contains only Dart primitives and enums — safely sendable.
+  static Future<Uint8List> runInIsolate({
+    required Uint8List rgba,
+    required int width,
+    required int height,
+    required CaptureSettings settings,
+    Float32List? segmentationMask,
+  }) {
+    return compute(_runPipelineIsolate, {
+      'rgba': rgba,
+      'width': width,
+      'height': height,
+      'settings': settings,
+      'mask': segmentationMask,
+    });
   }
 
   void dispose() {

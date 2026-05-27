@@ -40,8 +40,9 @@ class ImagePipeline {
     Float32List? segmentationMask,
   }) async {
     if (native.isAvailable) {
-      // ── Native C++ path (production) ─────────────────────────────────────
-      return native.process(
+      // ── Native C++ path — runs in a background isolate so the heavy bokeh
+      // kernel (radius=55, ~1.5B ops on 6MP) doesn't freeze the UI thread.
+      return NativeProcessor.runInIsolate(
         rgba: rgba,
         width: width,
         height: height,

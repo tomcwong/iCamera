@@ -729,7 +729,15 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         MediaQuery.of(context).orientation == Orientation.landscape;
 
     ref.listen<CaptureSettings>(captureSettingsProvider, (prev, next) {
-      ref.read(cameraControllerProvider.notifier).applyManualSettings(next);
+      // Only re-apply manual exposure when something that actually affects the
+      // sensor changes (mode, ISO, shutter speed). Aperture/WB/lens/look changes
+      // don't need a setManualExposure round-trip and were causing redundant
+      // lockForConfiguration calls that could hang the capture flow.
+      if (prev?.mode != next.mode ||
+          prev?.iso != next.iso ||
+          prev?.shutterSpeedDenominator != next.shutterSpeedDenominator) {
+        ref.read(cameraControllerProvider.notifier).applyManualSettings(next);
+      }
       if (prev?.quality != next.quality) {
         ref.read(cameraControllerProvider.notifier).setQuality(next.quality);
       }

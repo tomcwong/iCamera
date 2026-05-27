@@ -226,30 +226,35 @@ import Vision
   }
 
   private func setManualExposure(iso: Int, shutterDenom: Int, result: @escaping FlutterResult) {
-    // iOS 26: virtual device (builtInDualWideCamera) throws NSException from
-    // setExposureModeCustom even though it previously worked. Fall back to the
-    // physical wide-angle camera which still supports .custom mode.
     guard let device = cameraForExposure() else { result(nil); return }
     do {
       try device.lockForConfiguration()
       let duration = CMTimeMake(value: 1, timescale: Int32(max(1, shutterDenom)))
       let clampedIso = min(max(Float(iso), device.activeFormat.minISO), device.activeFormat.maxISO)
-      device.setExposureModeCustom(duration: duration, iso: clampedIso) { _ in
+      // Ensure result is called exactly once: either from the completion handler
+      // or from the 1.5 s safety timeout — whichever fires first.
+      // Guards against the completion handler never firing (iOS 26 virtual-device
+      // edge case) which would leave the Dart await hanging indefinitely.
+      var done = false
+      let finish = {
+        guard !done else { return }
+        done = true
         device.unlockForConfiguration()
         result(nil)
       }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { finish() }
+      device.setExposureModeCustom(duration: duration, iso: clampedIso) { _ in finish() }
     } catch {
       result(nil)
     }
   }
 
-  // Returns the best device for setExposureModeCustom.
-  // Tries the virtual device first (preserves multi-lens fusion), falls back to
-  // the physical wide-angle camera when the virtual device rejects .custom mode.
+  // Always use the physical wide-angle camera for setExposureModeCustom.
+  // Virtual devices (builtInDualWideCamera / builtInTripleCamera) claim to
+  // support .custom mode but throw NSException on iOS 26, preventing the
+  // completion handler from ever firing and hanging the Dart await.
+  // The physical wide-angle camera reliably supports .custom on all iOS versions.
   private func cameraForExposure() -> AVCaptureDevice? {
-    if let vDev = backCamera(), vDev.isExposureModeSupported(.custom) {
-      return vDev
-    }
     return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
   }
 
