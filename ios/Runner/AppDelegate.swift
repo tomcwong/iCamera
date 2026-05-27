@@ -12,6 +12,11 @@ import Vision
   private var _proCapturePending: FlutterResult?
   private weak var _captureSession: AVCaptureSession?
 
+  // Face detection
+  private var _faceVideoOutput: AVCaptureVideoDataOutput?
+  private var _faceEventSink: FlutterEventSink?
+  private var _faceFrameCount = 0
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -21,6 +26,13 @@ import Vision
     guard let controller = window?.rootViewController as? FlutterViewController else {
       return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
+
+    // EventChannel for streaming face detection bounding boxes to Flutter
+    let faceChannel = FlutterEventChannel(
+      name: "com.tcw3.icamera/face_stream",
+      binaryMessenger: controller.binaryMessenger
+    )
+    faceChannel.setStreamHandler(self)
 
     let channel = FlutterMethodChannel(
       name: "com.tcw3.icamera/manual_camera",
@@ -118,6 +130,7 @@ import Vision
           break
         }
       }
+      self?._setupFaceDetection(session: session)
     }
   }
 
@@ -127,8 +140,31 @@ import Vision
       if self?._captureSession === session {
         self?._proPhotoOutput = nil
         self?._captureSession = nil
+        self?._faceVideoOutput = nil
+        self?._faceFrameCount = 0
       }
     }
+  }
+
+  // Attaches an AVCaptureVideoDataOutput to the Flutter camera plugin's session
+  // so we can run Vision face detection on live frames without any polling.
+  private func _setupFaceDetection(session: AVCaptureSession) {
+    guard _faceVideoOutput == nil else { return }
+    let output = AVCaptureVideoDataOutput()
+    output.alwaysDiscardsLateVideoFrames = true
+    output.setSampleBufferDelegate(self, queue: DispatchQueue.global(qos: .utility))
+    guard session.canAddOutput(output) else { return }
+    session.beginConfiguration()
+    session.addOutput(output)
+    // Set portrait orientation so Vision gets portrait-space pixels directly —
+    // face bounding boxes then map straight to the Flutter preview widget coords.
+    if let conn = output.connection(with: .video) {
+      if conn.isVideoOrientationSupported {
+        conn.videoOrientation = .portrait
+      }
+    }
+    session.commitConfiguration()
+    _faceVideoOutput = output
   }
 
   // MARK: – Native PRO capture
@@ -239,14 +275,13 @@ import Vision
     result(["iso": iso, "shutterDenom": shutterDenom, "ev": ev, "aperture": aperture])
   }
 
-  // Writes GPS metadata into an existing JPEG at the given file path.
-  // Reads the file with CGImageSource, merges the GPS dictionary, and writes
-  // back to the same path without re-encoding pixel data (lossless metadata).
+  // Lossless GPS metadata injection: copies the compressed image data directly
+  // from the source using CGImageDestinationAddImageFromSource (no pixel decode/
+  // re-encode), merging GPS into the existing EXIF. Overwrites the file in-place.
   private func writeGpsToPhoto(path: String, lat: Double, lon: Double, alt: Double, result: @escaping FlutterResult) {
     let fileURL = URL(fileURLWithPath: path)
     guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil),
-          let uti = CGImageSourceGetType(source),
-          let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+          let uti = CGImageSourceGetType(source)
     else { result(nil); return }
 
     var props = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]) ?? [:]
@@ -264,8 +299,9 @@ import Vision
     let outputData = NSMutableData()
     guard let dest = CGImageDestinationCreateWithData(outputData as CFMutableData, uti, 1, nil)
     else { result(nil); return }
-    props[kCGImageDestinationLossyCompressionQuality as String] = 0.97
-    CGImageDestinationAddImage(dest, cgImage, props as CFDictionary)
+    // AddImageFromSource copies compressed bytes as-is — truly lossless, unlike
+    // CGImageDestinationAddImage which decodes then re-encodes the pixels.
+    CGImageDestinationAddImageFromSource(dest, source, 0, props as CFDictionary)
     guard CGImageDestinationFinalize(dest) else { result(nil); return }
     do {
       try (outputData as Data).write(to: fileURL, options: .atomic)
@@ -421,5 +457,47 @@ extension AppDelegate: AVCapturePhotoCaptureDelegate {
       return
     }
     result(FlutterStandardTypedData(bytes: data))
+  }
+}
+
+// MARK: – Live face detection delegate
+// Runs Vision VNDetectFaceRectanglesRequest on every ~20th video frame (~1.5 fps).
+// videoOrientation is set to .portrait in _setupFaceDetection, so the pixel buffer
+// arrives in portrait space — Vision bounds map directly to Flutter preview coords.
+extension AppDelegate: AVCaptureVideoDataOutputSampleBufferDelegate {
+  func captureOutput(_ output: AVCaptureOutput,
+                     didOutput sampleBuffer: CMSampleBuffer,
+                     from connection: AVCaptureConnection) {
+    _faceFrameCount += 1
+    guard _faceFrameCount % 20 == 0 else { return }
+    guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+    let request = VNDetectFaceRectanglesRequest()
+    let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+    do { try handler.perform([request]) } catch { return }
+
+    let observations = request.results ?? []
+    let faces: [[String: Double]] = observations.map { face in
+      let b = face.boundingBox
+      // Vision origin is bottom-left; flip Y so top-left matches Flutter screen coords.
+      return ["x": b.minX, "y": 1.0 - b.maxY, "w": b.width, "h": b.height]
+    }
+    DispatchQueue.main.async { [weak self] in
+      self?._faceEventSink?(faces)
+    }
+  }
+}
+
+// MARK: – Flutter EventChannel stream handler (face stream)
+extension AppDelegate: FlutterStreamHandler {
+  func onListen(withArguments arguments: Any?,
+                eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    _faceEventSink = events
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    _faceEventSink = nil
+    return nil
   }
 }

@@ -12,6 +12,12 @@ class ManualCameraService {
 
   static const _ch = MethodChannel('com.tcw3.icamera/manual_camera');
 
+  // EventChannel stream: native sends [{'x','y','w','h'}, ...] on each face detection update.
+  // Face bounds are normalized (0–1, top-left origin) relative to the portrait preview.
+  static const _faceChannel = EventChannel('com.tcw3.icamera/face_stream');
+  static Stream<dynamic> get faceStream =>
+      _faceChannel.receiveBroadcastStream();
+
   bool get isSupported => Platform.isAndroid || Platform.isIOS;
 
   /// Call once after [CameraController.initialize] so we can attach to the

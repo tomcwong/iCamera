@@ -252,12 +252,11 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   bool _showLevel = false;
   bool _mirrorFront = false;
 
-  // Live exposure readout (AUTO mode)
+  // Live exposure readout (AUTO mode) — updated on tap-to-focus and mode change
   int _liveIso = 0;
   int _liveShutterDenom = 0;
   double _liveEv = 0;
   double _liveAperture = 0;
-  Timer? _liveExposureTimer;
 
   // GPS for EXIF
   Position? _lastGpsPosition;
@@ -266,14 +265,18 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   // Available optical zoom levels (detected from hardware on iOS)
   List<double> _availableZooms = [1.0];
 
+  // Live face detection bounding boxes (normalized 0–1, top-left origin)
+  List<Map<String, double>> _detectedFaces = [];
+  StreamSubscription<dynamic>? _faceSub;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     ref.read(lutPreloadProvider);
-    _startLiveExposurePoll();
     _initGps();
     _loadAvailableZooms();
+    _subscribeFaceStream();
   }
 
   Future<void> _loadAvailableZooms() async {
@@ -285,27 +288,42 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   void dispose() {
     _zoomHideTimer?.cancel();
     _focusHideTimer?.cancel();
-    _liveExposureTimer?.cancel();
+    _faceSub?.cancel();
     _gpsSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  void _startLiveExposurePoll() {
-    _liveExposureTimer = Timer.periodic(const Duration(milliseconds: 600), (_) async {
-      final live = await ManualCameraService.instance.getLiveExposure();
-      if (live != null && mounted) {
-        setState(() {
-          final apt = (live['aperture'] as num?)?.toDouble() ?? 0;
-          if (apt > 0) _liveAperture = apt;
-          // Always update live ISO/SS — in PRO mode this lets the HUD reflect
-          // what the sensor actually uses, confirming manual exposure is applied.
-          _liveIso = (live['iso'] as num?)?.toInt() ?? 0;
-          _liveShutterDenom = (live['shutterDenom'] as num?)?.toInt() ?? 0;
-          _liveEv = (live['ev'] as num?)?.toDouble() ?? 0;
-        });
-      }
-    });
+  // Single one-shot exposure read — called after tap-to-focus or mode change.
+  // Waits 350 ms for the sensor to settle, then reads actual ISO/SS from hardware.
+  Future<void> _pollLiveExposureOnce() async {
+    await Future.delayed(const Duration(milliseconds: 350));
+    final live = await ManualCameraService.instance.getLiveExposure();
+    if (live != null && mounted) {
+      setState(() {
+        final apt = (live['aperture'] as num?)?.toDouble() ?? 0;
+        if (apt > 0) _liveAperture = apt;
+        _liveIso = (live['iso'] as num?)?.toInt() ?? 0;
+        _liveShutterDenom = (live['shutterDenom'] as num?)?.toInt() ?? 0;
+        _liveEv = (live['ev'] as num?)?.toDouble() ?? 0;
+      });
+    }
+  }
+
+  void _subscribeFaceStream() {
+    _faceSub = ManualCameraService.faceStream.listen((raw) {
+      if (!mounted || raw == null) return;
+      final list = (raw as List).map((e) {
+        final m = Map<String, dynamic>.from(e as Map);
+        return <String, double>{
+          'x': (m['x'] as num).toDouble(),
+          'y': (m['y'] as num).toDouble(),
+          'w': (m['w'] as num).toDouble(),
+          'h': (m['h'] as num).toDouble(),
+        };
+      }).toList();
+      setState(() => _detectedFaces = list);
+    }, onError: (_) {});
   }
 
   Future<void> _initGps() async {
@@ -371,6 +389,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     _focusHideTimer = Timer(const Duration(seconds: 2), () {
       if (mounted) setState(() => _focusVisible = false);
     });
+    // After focus point moves, re-read exposure so HUD reflects the new metering.
+    _pollLiveExposureOnce();
   }
 
   @override
@@ -609,6 +629,10 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
             prev.shutterSpeedDenominator != next.shutterSpeedDenominator)) {
       ref.read(cameraControllerProvider.notifier).applyManualSettings(next);
     }
+    // When switching back to AUTO, refresh HUD with what the sensor now chooses.
+    if (prev.mode == CaptureMode.manual && next.mode == CaptureMode.auto) {
+      _pollLiveExposureOnce();
+    }
   }
 
   void _toggleTopPanel(_TopPanel panel) {
@@ -792,6 +816,14 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                     previewSize: cns.biggest,
                   ),
                 ),
+              // Live face detection — yellow squares around detected faces
+              if (_detectedFaces.isNotEmpty)
+                IgnorePointer(
+                  child: _FaceBoxOverlay(
+                    faces: _detectedFaces,
+                    previewSize: cns.biggest,
+                  ),
+                ),
             ],
           );
         },
@@ -945,6 +977,9 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 // ── Bokeh preview overlay (APT mode live DoF simulation) ─────────────────────
 // Blurs everything outside a circle centred on the tap-to-focus point.
 // sigma is aperture-driven: f/1.0 → 8.4, f/8.0 → 0.
+// Portrait bokeh DoF preview: blurs everything OUTSIDE a tall portrait oval
+// that covers where a person's body would typically be. The oval tracks the
+// tap-to-focus point. Aperture controls blur intensity, not oval size.
 class _BokehPreviewOverlay extends StatelessWidget {
   const _BokehPreviewOverlay({
     required this.aperture,
@@ -965,11 +1000,14 @@ class _BokehPreviewOverlay extends StatelessWidget {
   Widget build(BuildContext context) {
     final sigma = _sigma(aperture);
     if (sigma < 0.3) return const SizedBox.shrink();
+    // Default center is slightly above vertical midpoint — head sits above middle.
     final center = focusCenter ??
-        Offset(previewSize.width / 2, previewSize.height / 2);
-    final radius = math.min(previewSize.width, previewSize.height) * 0.28;
+        Offset(previewSize.width / 2, previewSize.height * 0.46);
+    // Portrait oval: wide enough for shoulders, tall enough for head-to-hips.
+    final rx = previewSize.width * 0.42;
+    final ry = previewSize.height * 0.45;
     return ClipPath(
-      clipper: _DonutClipper(center: center, radius: radius),
+      clipper: _DonutClipper(center: center, rx: rx, ry: ry),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
         child: Container(color: Colors.transparent),
@@ -979,21 +1017,22 @@ class _BokehPreviewOverlay extends StatelessWidget {
 }
 
 class _DonutClipper extends CustomClipper<Path> {
-  const _DonutClipper({required this.center, required this.radius});
+  const _DonutClipper({required this.center, required this.rx, required this.ry});
   final Offset center;
-  final double radius;
+  final double rx;
+  final double ry;
 
   @override
   Path getClip(Size size) {
     return Path()
       ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..addOval(Rect.fromCircle(center: center, radius: radius))
+      ..addOval(Rect.fromCenter(center: center, width: rx * 2, height: ry * 2))
       ..fillType = PathFillType.evenOdd;
   }
 
   @override
   bool shouldReclip(_DonutClipper old) =>
-      old.center != center || old.radius != radius;
+      old.center != center || old.rx != rx || old.ry != ry;
 }
 
 // ── Camera Preview ────────────────────────────────────────────────────────────
@@ -2783,6 +2822,46 @@ class _LevelPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_LevelPainter old) => old.tilt != tilt;
+}
+
+// ── Face detection overlay ────────────────────────────────────────────────────
+// Draws yellow squares around each face detected by Vision on the native side.
+// [faces] contains normalized bounds (0–1, top-left origin) from the live stream.
+class _FaceBoxOverlay extends StatelessWidget {
+  const _FaceBoxOverlay({required this.faces, required this.previewSize});
+  final List<Map<String, double>> faces;
+  final Size previewSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: previewSize,
+      painter: _FaceBoxPainter(faces: faces),
+    );
+  }
+}
+
+class _FaceBoxPainter extends CustomPainter {
+  const _FaceBoxPainter({required this.faces});
+  final List<Map<String, double>> faces;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = const Color(0xFFFFD700)
+      ..strokeWidth = 2.0
+      ..style = PaintingStyle.stroke;
+    for (final f in faces) {
+      final x = (f['x'] ?? 0) * size.width;
+      final y = (f['y'] ?? 0) * size.height;
+      final w = (f['w'] ?? 0) * size.width;
+      final h = (f['h'] ?? 0) * size.height;
+      canvas.drawRect(Rect.fromLTWH(x, y, w, h), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_FaceBoxPainter old) => old.faces != faces;
 }
 
 // ── Fullscreen photo viewer ────────────────────────────────────────────────────
