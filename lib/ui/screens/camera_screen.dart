@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
-import 'dart:ui' show ImageFilter;
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:camera/camera.dart';
@@ -252,11 +251,14 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   bool _showLevel = false;
   bool _mirrorFront = false;
 
-  // Live exposure readout (AUTO mode) — updated on tap-to-focus and mode change
+  // Live exposure readout (AUTO mode)
   int _liveIso = 0;
   int _liveShutterDenom = 0;
   double _liveEv = 0;
   double _liveAperture = 0;
+  // 2-second periodic HUD refresh in AUTO mode so values track scene changes.
+  // Much gentler than the old 600 ms timer; cancelled in PRO mode.
+  Timer? _liveExposureTimer;
 
   // GPS for EXIF
   Position? _lastGpsPosition;
@@ -277,6 +279,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     _initGps();
     _loadAvailableZooms();
     _subscribeFaceStream();
+    _startAutoModeHudPoll();
   }
 
   Future<void> _loadAvailableZooms() async {
@@ -288,16 +291,37 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   void dispose() {
     _zoomHideTimer?.cancel();
     _focusHideTimer?.cancel();
+    _liveExposureTimer?.cancel();
     _faceSub?.cancel();
     _gpsSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  // Single one-shot exposure read — called after tap-to-focus or mode change.
-  // Waits 350 ms for the sensor to settle, then reads actual ISO/SS from hardware.
-  Future<void> _pollLiveExposureOnce() async {
-    await Future.delayed(const Duration(milliseconds: 350));
+  // 2-second periodic HUD refresh, runs only in AUTO mode.
+  // Gentle enough not to impact battery; stops automatically when PRO is active.
+  void _startAutoModeHudPoll() {
+    _liveExposureTimer?.cancel();
+    _liveExposureTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      final settings = ref.read(captureSettingsProvider);
+      if (settings.mode != CaptureMode.auto) return; // stop firing in PRO
+      await _readAndApplyLiveExposure();
+    });
+  }
+
+  // Burst of reads after tap-to-focus: camera re-meters over ~1.5 s so we
+  // sample at 500 ms, 1000 ms, and 1500 ms to catch the settled value.
+  void _pollAfterFocus() {
+    for (final delay in [500, 1000, 1500]) {
+      Future.delayed(Duration(milliseconds: delay), () async {
+        final settings = ref.read(captureSettingsProvider);
+        if (!mounted || settings.mode != CaptureMode.auto) return;
+        await _readAndApplyLiveExposure();
+      });
+    }
+  }
+
+  Future<void> _readAndApplyLiveExposure() async {
     final live = await ManualCameraService.instance.getLiveExposure();
     if (live != null && mounted) {
       setState(() {
@@ -389,8 +413,9 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     _focusHideTimer = Timer(const Duration(seconds: 2), () {
       if (mounted) setState(() => _focusVisible = false);
     });
-    // After focus point moves, re-read exposure so HUD reflects the new metering.
-    _pollLiveExposureOnce();
+    // After the focus point moves, burst-sample exposure so the HUD shows the
+    // camera's settled value (re-metering takes up to ~1.5 s after tap).
+    _pollAfterFocus();
   }
 
   @override
@@ -671,9 +696,13 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
             prev.shutterSpeedDenominator != next.shutterSpeedDenominator)) {
       ref.read(cameraControllerProvider.notifier).applyManualSettings(next);
     }
-    // When switching back to AUTO, refresh HUD with what the sensor now chooses.
-    if (prev.mode == CaptureMode.manual && next.mode == CaptureMode.auto) {
-      _pollLiveExposureOnce();
+    // Keep the periodic HUD poll running only in AUTO mode.
+    if (prev.mode != next.mode) {
+      if (next.mode == CaptureMode.auto) {
+        _startAutoModeHudPoll(); // restart 2-second cycle when entering AUTO
+      } else {
+        _liveExposureTimer?.cancel(); // no polling needed in PRO
+      }
     }
   }
 
@@ -850,14 +879,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                     ),
                   ),
                 ),
-              if (settings.mode == CaptureMode.manual)
-                IgnorePointer(
-                  child: _BokehPreviewOverlay(
-                    aperture: settings.aperture,
-                    focusCenter: _focusIndicatorPos,
-                    previewSize: cns.biggest,
-                  ),
-                ),
+              // Note: no live DoF circle overlay — bokeh is applied at capture time
+              // using Vision segmentation / Portrait Matte, not in the viewfinder.
               // Live face detection — yellow squares around detected faces
               if (_detectedFaces.isNotEmpty)
                 IgnorePointer(
@@ -1018,64 +1041,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 
 // ── Bokeh preview overlay (APT mode live DoF simulation) ─────────────────────
 // Blurs everything outside a circle centred on the tap-to-focus point.
-// sigma is aperture-driven: f/1.0 → 8.4, f/8.0 → 0.
-// Portrait bokeh DoF preview: blurs everything OUTSIDE a tall portrait oval
-// that covers where a person's body would typically be. The oval tracks the
-// tap-to-focus point. Aperture controls blur intensity, not oval size.
-class _BokehPreviewOverlay extends StatelessWidget {
-  const _BokehPreviewOverlay({
-    required this.aperture,
-    required this.focusCenter,
-    required this.previewSize,
-  });
-
-  final double aperture;
-  final Offset? focusCenter;
-  final Size previewSize;
-
-  static double _sigma(double aperture) {
-    if (aperture >= 8.0) return 0;
-    return (8.0 - aperture) * 1.2; // f/1.0→8.4, f/2.8→6.2, f/5.6→2.9, f/8→0
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final sigma = _sigma(aperture);
-    if (sigma < 0.3) return const SizedBox.shrink();
-    // Default center is slightly above vertical midpoint — head sits above middle.
-    final center = focusCenter ??
-        Offset(previewSize.width / 2, previewSize.height * 0.46);
-    // Portrait oval: wide enough for shoulders, tall enough for head-to-hips.
-    final rx = previewSize.width * 0.42;
-    final ry = previewSize.height * 0.45;
-    return ClipPath(
-      clipper: _DonutClipper(center: center, rx: rx, ry: ry),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
-        child: Container(color: Colors.transparent),
-      ),
-    );
-  }
-}
-
-class _DonutClipper extends CustomClipper<Path> {
-  const _DonutClipper({required this.center, required this.rx, required this.ry});
-  final Offset center;
-  final double rx;
-  final double ry;
-
-  @override
-  Path getClip(Size size) {
-    return Path()
-      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..addOval(Rect.fromCenter(center: center, width: rx * 2, height: ry * 2))
-      ..fillType = PathFillType.evenOdd;
-  }
-
-  @override
-  bool shouldReclip(_DonutClipper old) =>
-      old.center != center || old.rx != rx || old.ry != ry;
-}
 
 // ── Camera Preview ────────────────────────────────────────────────────────────
 class _CameraPreview extends StatelessWidget {
