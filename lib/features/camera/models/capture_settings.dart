@@ -2,7 +2,7 @@ import 'package:camera/camera.dart';
 import '../../color_science/leica_looks.dart';
 import '../../lens_simulation/lens_profile.dart';
 
-enum CaptureMode { auto, manual, aperture }
+enum CaptureMode { auto, manual }
 
 enum CaptureQuality { standard, high, heif }
 

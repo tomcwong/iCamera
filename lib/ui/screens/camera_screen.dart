@@ -496,7 +496,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       final height = decodeResult['height'] as int;
 
       Float32List? mask;
-      if (settings.mode == CaptureMode.aperture) {
+      if (settings.mode == CaptureMode.manual && settings.aperture < 8.0) {
         mask = await ref
             .read(segmentationServiceProvider)
             .segment(File(xfile.path), width, height);
@@ -784,7 +784,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
                     ),
                   ),
                 ),
-              if (settings.mode == CaptureMode.aperture)
+              if (settings.mode == CaptureMode.manual)
                 IgnorePointer(
                   child: _BokehPreviewOverlay(
                     aperture: settings.aperture,
@@ -1260,10 +1260,10 @@ class _TopHud extends StatelessWidget {
         : settings.shutterSpeedLabel;
     final isoRaw = (isAuto && liveIso > 0) ? liveIso : settings.iso;
     final isoStr = '${_snapIso(isoRaw)}';
-    // PRO: show user-selected virtual aperture. AUTO: show hardware f-stop.
-    final aptStr = isAuto
-        ? (liveAperture > 0 ? 'f/${liveAperture.toStringAsFixed(1)}' : settings.apertureLabel)
-        : settings.apertureLabel;
+    // PRO: show selected depth/aperture value. AUTO: show hardware f-stop.
+    final aptStr = !isAuto
+        ? settings.apertureLabel
+        : (liveAperture > 0 ? 'f/${liveAperture.toStringAsFixed(1)}' : '--');
 
     return Container(
       color: Colors.black,
@@ -1308,7 +1308,7 @@ class _TopHud extends StatelessWidget {
                   ],
                 ),
               ),
-              // APT
+              // DEPTH
               _HudTap(
                 active: activePanel == _TopPanel.apt,
                 onTap: () => onPanelTap(_TopPanel.apt),
@@ -1316,7 +1316,7 @@ class _TopHud extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    const Text('APT',
+                    const Text('DEPTH',
                         style: TextStyle(
                             color: LeicaColors.textDisabled,
                             fontSize: 7,
@@ -1517,7 +1517,7 @@ class _DisplayBar extends StatelessWidget {
                 padding: EdgeInsets.symmetric(vertical: 10),
                 child: Center(
                   child: Text(
-                    'AUTO — SS and APT controlled automatically',
+                    'Depth effect — switch to PRO mode to control',
                     style: TextStyle(
                         color: LeicaColors.textSecondary,
                         fontSize: 10,
@@ -1536,7 +1536,7 @@ class _DisplayBar extends StatelessWidget {
                       .clamp(0, _apertureValues.length - 1),
                   onChanged: (i) => onSettingsChanged(
                       (s) => s.copyWith(aperture: _apertureValues[i])),
-                  label: 'APERTURE',
+                  label: 'DEPTH',
                 ),
               ),
         _TopPanel.iso => _IsoPanel(
@@ -1688,28 +1688,12 @@ class _SsAptPanel extends StatelessWidget {
         padding: EdgeInsets.symmetric(vertical: 10),
         child: Center(
           child: Text(
-            'AUTO — SS and APT controlled automatically',
+            'AUTO — shutter speed controlled automatically',
             style: TextStyle(
                 color: LeicaColors.textSecondary,
                 fontSize: 10,
                 letterSpacing: 0.5),
           ),
-        ),
-      );
-    }
-    if (settings.mode == CaptureMode.aperture) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: ExposureWheel(
-          values: _apertureValues
-              .map((v) => 'f/${v.toStringAsFixed(1)}')
-              .toList(),
-          selectedIndex: _apertureValues
-              .indexWhere((v) => (v - settings.aperture).abs() < 0.05)
-              .clamp(0, _apertureValues.length - 1),
-          onChanged: (i) =>
-              onSettingsChanged((s) => s.copyWith(aperture: _apertureValues[i])),
-          label: 'APERTURE',
         ),
       );
     }
@@ -2007,7 +1991,7 @@ class _ModePair extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 78,
+      height: 52,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
@@ -2025,14 +2009,6 @@ class _ModePair extends StatelessWidget {
             onTap: () {
               HapticFeedback.selectionClick();
               onModeChanged(CaptureMode.manual);
-            },
-          ),
-          _MiniModeChip(
-            label: 'APT',
-            selected: settings.mode == CaptureMode.aperture,
-            onTap: () {
-              HapticFeedback.selectionClick();
-              onModeChanged(CaptureMode.aperture);
             },
           ),
         ],
@@ -2129,9 +2105,9 @@ class _LandscapeLeftRail extends StatelessWidget {
         : settings.shutterSpeedLabel;
     final isoRaw = (isAuto && liveIso > 0) ? liveIso : settings.iso;
     final isoStr = '${_snapIso(isoRaw)}';
-    final aptStr = isAuto
-        ? (liveAperture > 0 ? 'f/${liveAperture.toStringAsFixed(1)}' : settings.apertureLabel)
-        : settings.apertureLabel;
+    final aptStr = !isAuto
+        ? settings.apertureLabel
+        : (liveAperture > 0 ? 'f/${liveAperture.toStringAsFixed(1)}' : '--');
 
     return Container(
       width: 68,
@@ -2147,7 +2123,7 @@ class _LandscapeLeftRail extends StatelessWidget {
             onTap: () => onPanelTap(_TopPanel.ssApt),
           ),
           _LandscapeHudBtn(
-            label: 'APT',
+            label: 'DEPTH',
             value: aptStr,
             active: activePanel == _TopPanel.apt,
             onTap: () => onPanelTap(_TopPanel.apt),

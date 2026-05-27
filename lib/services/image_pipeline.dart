@@ -74,8 +74,8 @@ class ImagePipeline {
       LensRenderer.instance.applyVignette(pixels, vigMap);
     }
 
-    // 3. Bokeh (Dart, aperture mode only)
-    if (settings.mode == CaptureMode.aperture) {
+    // 3. Bokeh (Dart fallback, PRO mode with wide aperture)
+    if (settings.mode == CaptureMode.manual && settings.aperture < 8.0) {
       final mask = segmentationMask ?? _centreWeightedMask(width, height);
       pixels = await bokehEngine.apply(
         rgba: pixels,
