@@ -168,8 +168,9 @@ class NativeProcessor {
   }
 
   int _bokehRadius(double aperture, double maxAperture) {
-    // f/1.2 at max → 28px radius; f/16 → 0
-    return (28.0 * (maxAperture / aperture)).clamp(0.0, 28.0).round();
+    // f/1.0 → 55px, f/1.4 → 39px, f/2.8 → 20px, f/8.0 → 7px
+    // Cap raised from 28 to 55 so wide apertures produce visibly strong blur.
+    return (55.0 * (maxAperture / aperture)).clamp(0.0, 55.0).round();
   }
 
   void dispose() {

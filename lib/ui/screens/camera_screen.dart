@@ -425,6 +425,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     setState(() => _isCapturing = true);
 
     XFile? xfile;
+    Float32List? appleMatte;
+    int? appleMatteW, appleMatteH;
 
     if (settings.mode == CaptureMode.manual && Platform.isIOS) {
       // PRO mode on iOS: apply manual exposure then use our native capture path
@@ -433,13 +435,17 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       await ref
           .read(cameraControllerProvider.notifier)
           .applyManualSettings(settings);
-      final bytes = await ManualCameraService.instance.captureProPhoto();
-      if (bytes != null) {
+      final result = await ManualCameraService.instance.captureProPhoto();
+      if (result != null) {
         final dir = await getTemporaryDirectory();
         final path =
             '${dir.path}/icamera_pro_${DateTime.now().millisecondsSinceEpoch}.jpg';
-        await File(path).writeAsBytes(bytes);
+        await File(path).writeAsBytes(result.jpeg);
         xfile = XFile(path);
+        // Apple Portrait Matte — if present, skip the slower Vision segmentation
+        appleMatte = result.mask;
+        appleMatteW = result.maskWidth;
+        appleMatteH = result.maskHeight;
       }
     }
 
@@ -456,11 +462,16 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     setState(() => _isCapturing = false);
     if (xfile == null) return;
     final rotAngle = _captureRotationDegrees();
-    _processAndSave(xfile, settings, rotAngle);
+    _processAndSave(xfile, settings, rotAngle,
+        appleMatte: appleMatte, appleMatteW: appleMatteW, appleMatteH: appleMatteH);
   }
 
   Future<void> _processAndSave(
-      XFile xfile, CaptureSettings settings, int rotAngle) async {
+      XFile xfile, CaptureSettings settings, int rotAngle, {
+      Float32List? appleMatte,
+      int? appleMatteW,
+      int? appleMatteH,
+  }) async {
     try {
       if (settings.rawEnabled) {
         final path = await DngWriter.instance.save(xfile, asRaw: true);
@@ -517,9 +528,16 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 
       Float32List? mask;
       if (settings.mode == CaptureMode.manual && settings.aperture < 8.0) {
-        mask = await ref
-            .read(segmentationServiceProvider)
-            .segment(File(xfile.path), width, height);
+        if (appleMatte != null && appleMatteW != null && appleMatteH != null) {
+          // Use Apple's Portrait Effects Matte (Neural Engine, hair-strand precision).
+          // Bilinearly resample it from its native resolution to the processed image size.
+          mask = _resampleMask(appleMatte, appleMatteW, appleMatteH, width, height);
+        } else {
+          // Fallback: run Vision person segmentation post-capture.
+          mask = await ref
+              .read(segmentationServiceProvider)
+              .segment(File(xfile.path), width, height);
+        }
       }
 
       final processedRgba = await ref.read(imagePipelineProvider).process(
@@ -566,6 +584,30 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       await DngWriter.instance.copyToGallery(path);
       if (mounted) setState(() => _lastCapturePath = path);
     } catch (_) {}
+  }
+
+  // Bilinearly resample a Float32 mask from [srcW×srcH] to [dstW×dstH].
+  static Float32List _resampleMask(
+      Float32List src, int srcW, int srcH, int dstW, int dstH) {
+    final dst = Float32List(dstW * dstH);
+    final fSrcW = (srcW - 1).toDouble();
+    final fSrcH = (srcH - 1).toDouble();
+    for (int dy = 0; dy < dstH; dy++) {
+      final fy = dy * fSrcH / (dstH - 1);
+      final sy0 = fy.toInt().clamp(0, srcH - 1);
+      final sy1 = (sy0 + 1).clamp(0, srcH - 1);
+      final ty = fy - sy0;
+      for (int dx = 0; dx < dstW; dx++) {
+        final fx = dx * fSrcW / (dstW - 1);
+        final sx0 = fx.toInt().clamp(0, srcW - 1);
+        final sx1 = (sx0 + 1).clamp(0, srcW - 1);
+        final tx = fx - sx0;
+        final v = (src[sy0 * srcW + sx0] * (1 - tx) + src[sy0 * srcW + sx1] * tx) * (1 - ty)
+                + (src[sy1 * srcW + sx0] * (1 - tx) + src[sy1 * srcW + sx1] * tx) * ty;
+        dst[dy * dstW + dx] = v.clamp(0.0, 1.0);
+      }
+    }
+    return dst;
   }
 
   // Convert decimal degrees to the "d/1 m/1 s*100/100" rational DMS string

@@ -127,6 +127,12 @@ import Vision
       for output in session.outputs {
         if let photoOut = output as? AVCapturePhotoOutput {
           self?._proPhotoOutput = photoOut
+          // Enable portrait effects matte delivery when the hardware supports it
+          // (dual-camera or TrueDepth devices). The matte is Apple's own Neural
+          // Engine mask — far higher quality than VNGeneratePersonSegmentationRequest.
+          if photoOut.isPortraitEffectsMatteDeliverySupported {
+            photoOut.isPortraitEffectsMatteDeliveryEnabled = true
+          }
           break
         }
       }
@@ -186,6 +192,12 @@ import Vision
     settings.isAutoVirtualDeviceFusionEnabled = false
     if #available(iOS 13.0, *) {
       settings.photoQualityPrioritization = .speed
+    }
+    // Request Portrait Effects Matte when the hardware supports it.
+    // This gives Apple's Neural Engine mask (hair-strand precision, soft alpha)
+    // which is far better than our post-capture VNGeneratePersonSegmentationRequest.
+    if photoOutput.isPortraitEffectsMatteDeliveryEnabled {
+      settings.isPortraitEffectsMatteDeliveryEnabled = true
     }
     _proCapturePending = result
     photoOutput.capturePhoto(with: settings, delegate: self)
@@ -337,7 +349,8 @@ import Vision
     DispatchQueue.global(qos: .userInitiated).async {
       let fileURL = URL(fileURLWithPath: path)
       let request = VNGeneratePersonSegmentationRequest()
-      request.qualityLevel = .balanced
+      // .accurate gives the best hair-edge detail; post-capture so speed is not critical.
+      request.qualityLevel = .accurate
       request.outputPixelFormat = kCVPixelFormatType_OneComponent8
 
       let handler = VNImageRequestHandler(url: fileURL, options: [:])
@@ -456,6 +469,33 @@ extension AppDelegate: AVCapturePhotoCaptureDelegate {
       result(nil)
       return
     }
+
+    // Try to include the Portrait Effects Matte (Apple Neural Engine mask).
+    // Matte is a Float32 pixel buffer: 1.0 = subject (sharp), 0.0 = background.
+    // If available it replaces the slower post-capture VNGeneratePersonSegmentation.
+    if #available(iOS 12.0, *),
+       let matte = photo.portraitEffectsMatte {
+      let buf = matte.mattingImage          // CVPixelBuffer, kCVPixelFormatType_OneComponent32Float
+      CVPixelBufferLockBaseAddress(buf, .readOnly)
+      defer { CVPixelBufferUnlockBaseAddress(buf, .readOnly) }
+      if let ptr = CVPixelBufferGetBaseAddress(buf) {
+        let w = CVPixelBufferGetWidth(buf)
+        let h = CVPixelBufferGetHeight(buf)
+        let count = w * h
+        let floatPtr = ptr.assumingMemoryBound(to: Float.self)
+        let floatData = Data(bytes: floatPtr, count: count * MemoryLayout<Float>.size)
+        let matteTyped = FlutterStandardTypedData(float32: floatData)
+        result([
+          "jpeg": FlutterStandardTypedData(bytes: data),
+          "matte": matteTyped,
+          "matteWidth": w,
+          "matteHeight": h,
+        ])
+        return
+      }
+    }
+
+    // No matte available — return raw JPEG bytes (Dart will run Vision separately)
     result(FlutterStandardTypedData(bytes: data))
   }
 }

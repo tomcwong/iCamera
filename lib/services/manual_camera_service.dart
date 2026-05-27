@@ -6,6 +6,23 @@ import 'package:flutter/services.dart';
 ///
 /// Provides direct hardware ISO and shutter-speed control via CameraX
 /// Camera2 interop. All methods silently no-op on iOS and desktop.
+/// Result of a native PRO capture.
+/// [jpeg] is always present.  [mask] is the Apple Portrait Effects Matte
+/// (Float32, 1=subject, 0=background) when the hardware supports it; null
+/// otherwise (caller falls back to VNGeneratePersonSegmentationRequest).
+class ProCaptureResult {
+  final Uint8List jpeg;
+  final Float32List? mask;
+  final int? maskWidth;
+  final int? maskHeight;
+  const ProCaptureResult({
+    required this.jpeg,
+    this.mask,
+    this.maskWidth,
+    this.maskHeight,
+  });
+}
+
 class ManualCameraService {
   ManualCameraService._();
   static final ManualCameraService instance = ManualCameraService._();
@@ -125,16 +142,45 @@ class ManualCameraService {
     } catch (_) {}
   }
 
-  /// Captures a single JPEG via native AVCapturePhotoOutput with Smart HDR and
-  /// virtual-device fusion disabled, so manual ISO/SS settings are honoured.
-  /// Returns null on failure — caller should fall back to ctrl.takePicture().
-  Future<Uint8List?> captureProPhoto() async {
+  /// Captures a JPEG via native AVCapturePhotoOutput (Smart HDR disabled).
+  /// Returns a [ProCaptureResult] with the JPEG bytes and, when the hardware
+  /// supports it (dual-camera / TrueDepth), Apple's Portrait Effects Matte —
+  /// a Float32 mask (1=subject/sharp, 0=background) at the matte's native
+  /// resolution.  If the matte is absent, [mask] is null and the caller should
+  /// fall back to VNGeneratePersonSegmentationRequest.
+  Future<ProCaptureResult?> captureProPhoto() async {
     if (!Platform.isIOS) return null;
     try {
       final raw = await _ch.invokeMethod<dynamic>('captureProPhoto');
       if (raw == null) return null;
-      if (raw is Uint8List) return raw;
-      return Uint8List.fromList((raw as List).cast<int>());
+
+      // Old path: native returned raw bytes (no matte)
+      if (raw is Uint8List) return ProCaptureResult(jpeg: raw);
+
+      // New path: native returned {'jpeg':..., 'matte':..., 'matteWidth':..., 'matteHeight':...}
+      if (raw is Map) {
+        final jpegRaw = raw['jpeg'];
+        Uint8List? jpeg;
+        if (jpegRaw is Uint8List) {
+          jpeg = jpegRaw;
+        } else if (jpegRaw != null) {
+          jpeg = Uint8List.fromList((jpegRaw as List).cast<int>());
+        }
+        if (jpeg == null) return null;
+
+        final matteRaw = raw['matte'];
+        Float32List? matte;
+        if (matteRaw is Float32List) {
+          matte = matteRaw;
+        } else if (matteRaw is Uint8List) {
+          matte = matteRaw.buffer.asFloat32List();
+        }
+
+        final matteW = (raw['matteWidth'] as num?)?.toInt();
+        final matteH = (raw['matteHeight'] as num?)?.toInt();
+        return ProCaptureResult(jpeg: jpeg, mask: matte, maskWidth: matteW, maskHeight: matteH);
+      }
+      return null;
     } catch (_) {
       return null;
     }
