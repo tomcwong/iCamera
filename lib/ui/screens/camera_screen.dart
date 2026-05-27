@@ -302,7 +302,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
   // Gentle enough not to impact battery; stops automatically when PRO is active.
   void _startAutoModeHudPoll() {
     _liveExposureTimer?.cancel();
-    _liveExposureTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+    _liveExposureTimer = Timer.periodic(const Duration(milliseconds: 1000), (_) async {
       final settings = ref.read(captureSettingsProvider);
       if (settings.mode != CaptureMode.auto) return; // stop firing in PRO
       await _readAndApplyLiveExposure();

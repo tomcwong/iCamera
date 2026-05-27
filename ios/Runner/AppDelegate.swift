@@ -278,7 +278,10 @@ import Vision
   }
 
   private func getLiveExposure(result: @escaping FlutterResult) {
-    guard let device = backCamera() else { result(nil); return }
+    // Read from the physical wide-angle camera — its iso/exposureDuration properties
+    // update in real-time under AE control. Virtual devices return stale snapshots
+    // on iOS 26 and make the viewfinder HUD appear frozen.
+    guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else { result(nil); return }
     let iso = Int(device.iso)
     let durationSec = CMTimeGetSeconds(device.exposureDuration)
     let shutterDenom: Int
