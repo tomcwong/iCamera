@@ -1471,34 +1471,35 @@ class _TopHud extends StatelessWidget {
                   ),
                 ),
               ),
-              // WB
-              _HudTap(
-                active: activePanel == _TopPanel.wb,
-                onTap: () => onPanelTap(_TopPanel.wb),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('WB',
-                        style: TextStyle(
-                            color: LeicaColors.textDisabled,
-                            fontSize: 7,
-                            letterSpacing: 1.5)),
-                    const SizedBox(height: 2),
-                    Text(settings.wbLabel,
+              // WB — PRO only (AUTO uses hardware AWB)
+              if (!isAuto)
+                _HudTap(
+                  active: activePanel == _TopPanel.wb,
+                  onTap: () => onPanelTap(_TopPanel.wb),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('WB',
+                          style: TextStyle(
+                              color: LeicaColors.textDisabled,
+                              fontSize: 7,
+                              letterSpacing: 1.5)),
+                      const SizedBox(height: 2),
+                      Text(settings.wbLabel,
+                          style: const TextStyle(
+                              color: LeicaColors.textPrimary,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500)),
+                      Text(
+                        CaptureSettings.wbLabels[CaptureSettings.wbPresets
+                            .indexOf(settings.whiteBalanceKelvin)
+                            .clamp(0, CaptureSettings.wbLabels.length - 1)],
                         style: const TextStyle(
-                            color: LeicaColors.textPrimary,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500)),
-                    Text(
-                      CaptureSettings.wbLabels[CaptureSettings.wbPresets
-                          .indexOf(settings.whiteBalanceKelvin)
-                          .clamp(0, CaptureSettings.wbLabels.length - 1)],
-                      style: const TextStyle(
-                          color: Colors.white, fontSize: 7, letterSpacing: 1),
-                    ),
-                  ],
+                            color: Colors.white, fontSize: 7, letterSpacing: 1),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
               // ISO
               _HudTap(
                 active: activePanel == _TopPanel.iso,
@@ -1520,31 +1521,32 @@ class _TopHud extends StatelessWidget {
                   ],
                 ),
               ),
-              // EV compensation
-              _HudTap(
-                active: activePanel == _TopPanel.ev,
-                onTap: () => onPanelTap(_TopPanel.ev),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('EV',
+              // EV — AUTO only (PRO uses ISO/SS directly)
+              if (isAuto)
+                _HudTap(
+                  active: activePanel == _TopPanel.ev,
+                  onTap: () => onPanelTap(_TopPanel.ev),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('EV',
+                          style: TextStyle(
+                              color: LeicaColors.textDisabled,
+                              fontSize: 7,
+                              letterSpacing: 1.5)),
+                      const SizedBox(height: 2),
+                      Text(
+                        _formatEv(settings.exposureCompensation),
                         style: TextStyle(
-                            color: LeicaColors.textDisabled,
-                            fontSize: 7,
-                            letterSpacing: 1.5)),
-                    const SizedBox(height: 2),
-                    Text(
-                      _formatEv(settings.exposureCompensation),
-                      style: TextStyle(
-                          color: settings.exposureCompensation != 0.0
-                              ? LeicaColors.red
-                              : LeicaColors.textPrimary,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500),
-                    ),
-                  ],
+                            color: settings.exposureCompensation != 0.0
+                                ? LeicaColors.red
+                                : LeicaColors.textPrimary,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
             ],
           ),
         ],
@@ -2324,24 +2326,28 @@ class _LandscapeLeftRail extends StatelessWidget {
               ),
             ),
           ),
-          _LandscapeHudBtn(
-            label: 'WB',
-            value: settings.wbLabel,
-            active: activePanel == _TopPanel.wb,
-            onTap: () => onPanelTap(_TopPanel.wb),
-          ),
+          // WB — PRO only
+          if (!isAuto)
+            _LandscapeHudBtn(
+              label: 'WB',
+              value: settings.wbLabel,
+              active: activePanel == _TopPanel.wb,
+              onTap: () => onPanelTap(_TopPanel.wb),
+            ),
           _LandscapeHudBtn(
             label: 'ISO',
             value: isoStr,
             active: activePanel == _TopPanel.iso,
             onTap: () => onPanelTap(_TopPanel.iso),
           ),
-          _LandscapeHudBtn(
-            label: 'EV',
-            value: _formatEv(settings.exposureCompensation),
-            active: activePanel == _TopPanel.ev,
-            onTap: () => onPanelTap(_TopPanel.ev),
-          ),
+          // EV — AUTO only
+          if (isAuto)
+            _LandscapeHudBtn(
+              label: 'EV',
+              value: _formatEv(settings.exposureCompensation),
+              active: activePanel == _TopPanel.ev,
+              onTap: () => onPanelTap(_TopPanel.ev),
+            ),
         ],
       ),
     );
