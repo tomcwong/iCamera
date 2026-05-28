@@ -515,13 +515,16 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         }
         xfile = await ref.read(cameraControllerProvider.notifier).capture();
       }
+      if (xfile == null) return;
+      final rotAngle = _captureRotationDegrees();
+      // Await save so _isCapturing stays true until the photo is fully written.
+      // Without this, a 3–8 s bokeh save re-enables the shutter immediately,
+      // letting the user queue a second save that exhausts CPU/memory and freezes.
+      await _processAndSave(xfile, settings, rotAngle,
+          appleMatte: appleMatte, appleMatteW: appleMatteW, appleMatteH: appleMatteH);
     } finally {
       if (mounted) setState(() => _isCapturing = false);
     }
-    if (xfile == null) return;
-    final rotAngle = _captureRotationDegrees();
-    _processAndSave(xfile, settings, rotAngle,
-        appleMatte: appleMatte, appleMatteW: appleMatteW, appleMatteH: appleMatteH);
   }
 
   Future<void> _processAndSave(
