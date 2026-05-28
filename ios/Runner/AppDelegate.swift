@@ -370,8 +370,8 @@ import Vision
     DispatchQueue.global(qos: .userInitiated).async {
       let fileURL = URL(fileURLWithPath: path)
       let request = VNGeneratePersonSegmentationRequest()
-      // .accurate gives the best hair-edge detail; post-capture so speed is not critical.
-      request.qualityLevel = .accurate
+      // .balanced gives good hair-edge quality in ~3 s vs 30+ s for .accurate.
+      request.qualityLevel = .balanced
       request.outputPixelFormat = kCVPixelFormatType_OneComponent8
 
       let handler = VNImageRequestHandler(url: fileURL, options: [:])

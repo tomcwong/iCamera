@@ -22,6 +22,7 @@ import '../../features/lens_simulation/lens_profile.dart';
 import '../../features/raw_capture/dng_writer.dart';
 import '../../services/image_pipeline.dart';
 import '../../services/manual_camera_service.dart';
+import 'package:photo_manager/photo_manager.dart';
 import '../widgets/shutter_button.dart';
 import '../widgets/exposure_wheel.dart';
 import '../widgets/wb_selector.dart';
@@ -65,6 +66,35 @@ Map<String, dynamic> _decodeAndRotate(Map<String, dynamic> args) {
     'width': decoded.width,
     'height': decoded.height,
   };
+}
+
+// Top-level so compute() can reference it. Bilinearly resamples a Float32 mask
+// to the target dimensions — kept off the main isolate to avoid UI jank.
+Float32List _resampleMaskCompute(Map<String, dynamic> args) {
+  final src = args['src'] as Float32List;
+  final srcW = args['srcW'] as int;
+  final srcH = args['srcH'] as int;
+  final dstW = args['dstW'] as int;
+  final dstH = args['dstH'] as int;
+  final dst = Float32List(dstW * dstH);
+  final fSrcW = (srcW - 1).toDouble();
+  final fSrcH = (srcH - 1).toDouble();
+  for (int dy = 0; dy < dstH; dy++) {
+    final fy = dy * fSrcH / (dstH - 1);
+    final sy0 = fy.toInt().clamp(0, srcH - 1);
+    final sy1 = (sy0 + 1).clamp(0, srcH - 1);
+    final ty = fy - sy0;
+    for (int dx = 0; dx < dstW; dx++) {
+      final fx = dx * fSrcW / (dstW - 1);
+      final sx0 = fx.toInt().clamp(0, srcW - 1);
+      final sx1 = (sx0 + 1).clamp(0, srcW - 1);
+      final tx = fx - sx0;
+      final v = (src[sy0 * srcW + sx0] * (1 - tx) + src[sy0 * srcW + sx1] * tx) * (1 - ty)
+              + (src[sy1 * srcW + sx0] * (1 - tx) + src[sy1 * srcW + sx1] * tx) * ty;
+      dst[dy * dstW + dx] = v.clamp(0.0, 1.0);
+    }
+  }
+  return dst;
 }
 
 Uint8List _encodeRgbaToJpeg(Map<String, dynamic> args) {
@@ -280,6 +310,9 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     _loadAvailableZooms();
     _subscribeFaceStream();
     _startAutoModeHudPoll();
+    // Prompt "iCamera would like to access your photos" at startup so the user
+    // grants permission before their first capture, not mid-save.
+    PhotoManager.requestPermissionExtend();
   }
 
   Future<void> _loadAvailableZooms() async {
@@ -454,12 +487,11 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     int? appleMatteW, appleMatteH;
     try {
       if (settings.mode == CaptureMode.manual && Platform.isIOS) {
-        // PRO mode on iOS: apply manual exposure then use our native capture path
-        // which sets isAutoVirtualDeviceFusionEnabled=false + photoQualityPrioritization=.speed
-        // so iOS cannot override ISO/SS with Smart HDR or Deep Fusion.
-        await ref
-            .read(cameraControllerProvider.notifier)
-            .applyManualSettings(settings);
+        // PRO mode on iOS: use our native capture path which disables Smart HDR /
+        // Deep Fusion so the sensor's manual ISO/SS is honoured.
+        // Manual exposure was already applied by ref.listen / _updateSettings when
+        // the user moved the sliders — re-applying here just added 0.5 s of
+        // setManualExposure latency and lockForConfiguration conflicts.
         final result = await ManualCameraService.instance.captureProPhoto();
         if (result != null) {
           final dir = await getTemporaryDirectory();
@@ -476,7 +508,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
 
       if (xfile == null) {
         // AUTO mode, non-iOS PRO, or fallback when native capture fails.
-        if (settings.mode == CaptureMode.manual) {
+        if (settings.mode == CaptureMode.manual && !Platform.isIOS) {
           await ref
               .read(cameraControllerProvider.notifier)
               .applyManualSettings(settings);
@@ -557,7 +589,11 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         if (appleMatte != null && appleMatteW != null && appleMatteH != null) {
           // Use Apple's Portrait Effects Matte (Neural Engine, hair-strand precision).
           // Bilinearly resample it from its native resolution to the processed image size.
-          mask = _resampleMask(appleMatte, appleMatteW, appleMatteH, width, height);
+          // Runs in a background isolate so the 6 MP resample doesn't stall the UI.
+          mask = await compute(_resampleMaskCompute, {
+            'src': appleMatte, 'srcW': appleMatteW, 'srcH': appleMatteH,
+            'dstW': width, 'dstH': height,
+          });
         } else {
           // Fallback: run Vision person segmentation post-capture.
           mask = await ref
@@ -610,30 +646,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       await DngWriter.instance.copyToGallery(path);
       if (mounted) setState(() => _lastCapturePath = path);
     } catch (_) {}
-  }
-
-  // Bilinearly resample a Float32 mask from [srcW×srcH] to [dstW×dstH].
-  static Float32List _resampleMask(
-      Float32List src, int srcW, int srcH, int dstW, int dstH) {
-    final dst = Float32List(dstW * dstH);
-    final fSrcW = (srcW - 1).toDouble();
-    final fSrcH = (srcH - 1).toDouble();
-    for (int dy = 0; dy < dstH; dy++) {
-      final fy = dy * fSrcH / (dstH - 1);
-      final sy0 = fy.toInt().clamp(0, srcH - 1);
-      final sy1 = (sy0 + 1).clamp(0, srcH - 1);
-      final ty = fy - sy0;
-      for (int dx = 0; dx < dstW; dx++) {
-        final fx = dx * fSrcW / (dstW - 1);
-        final sx0 = fx.toInt().clamp(0, srcW - 1);
-        final sx1 = (sx0 + 1).clamp(0, srcW - 1);
-        final tx = fx - sx0;
-        final v = (src[sy0 * srcW + sx0] * (1 - tx) + src[sy0 * srcW + sx1] * tx) * (1 - ty)
-                + (src[sy1 * srcW + sx0] * (1 - tx) + src[sy1 * srcW + sx1] * tx) * ty;
-        dst[dy * dstW + dx] = v.clamp(0.0, 1.0);
-      }
-    }
-    return dst;
   }
 
   // Convert decimal degrees to the "d/1 m/1 s*100/100" rational DMS string
