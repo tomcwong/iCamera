@@ -537,6 +537,26 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
         return;
       }
 
+      // Fast path: skip decode → pipeline → re-encode when nothing needs
+      // processing. Saves original compressed bytes directly — matches native
+      // iOS camera speed (<0.5 s vs 3–6 s for the full pipeline).
+      final needsFullPipeline = settings.leicaLookEnabled
+          || settings.exposureCompensation != 0.0
+          || settings.whiteBalanceKelvin != 5500
+          || settings.aspectRatio == CaptureAspectRatio.aspect16_9
+          || settings.quality == CaptureQuality.heif
+          || (settings.mode == CaptureMode.manual && settings.aperture < 8.0)
+          || rotAngle != 0;
+
+      if (!needsFullPipeline) {
+        final rawBytes = await xfile.readAsBytes();
+        final path = await DngWriter.instance.saveJpegLocal(rawBytes);
+        await _addGpsExif(path, _lastGpsPosition);
+        await DngWriter.instance.copyToGallery(path);
+        if (mounted) setState(() => _lastCapturePath = path);
+        return;
+      }
+
       final rawBytes = await xfile.readAsBytes();
       Map<String, dynamic>? decodeResult;
       try {
