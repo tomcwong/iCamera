@@ -189,6 +189,13 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
       await ctrl.setFocusMode(FocusMode.auto);
       // Clear Camera2 overrides so auto-exposure fully resumes.
       await ManualCameraService.instance.setAutoExposure();
+      // Apply EV compensation so the live preview brightens/darkens immediately.
+      try {
+        final minEv = await ctrl.getMinExposureOffset();
+        final maxEv = await ctrl.getMaxExposureOffset();
+        await ctrl.setExposureOffset(
+            settings.exposureCompensation.clamp(minEv, maxEv));
+      } catch (_) {}
     }
   }
 

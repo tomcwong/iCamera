@@ -42,7 +42,18 @@ const _apertureValues = [
 ];
 
 // Which panel is currently shown in the display bar.
-enum _TopPanel { ssApt, apt, lens, wb, iso, looks, view, timer }
+enum _TopPanel { ssApt, apt, lens, wb, iso, looks, view, timer, ev }
+
+String _formatEv(double ev) {
+  if (ev == 0.0) return '0';
+  return '${ev > 0 ? '+' : ''}${ev.toStringAsFixed(1)}';
+}
+
+const _evValues = [
+  -3.0, -2.7, -2.3, -2.0, -1.7, -1.3, -1.0, -0.7, -0.3,
+  0.0,
+  0.3, 0.7, 1.0, 1.3, 1.7, 2.0, 2.3, 2.7, 3.0,
+];
 
 // Snap a raw live-ISO value to the nearest standard camera stop.
 int _snapIso(int raw) {
@@ -725,11 +736,12 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     if (prev.selectedLens != next.selectedLens) {
       _setZoom(next.selectedLens.defaultZoom);
     }
-    // Apply manual exposure immediately when ISO or SS changes in PRO mode so
-    // the sensor updates before capture and the live HUD reflects real values.
-    if (next.mode == CaptureMode.manual &&
-        (prev.iso != next.iso ||
-            prev.shutterSpeedDenominator != next.shutterSpeedDenominator)) {
+    // Apply sensor settings immediately when ISO/SS/EV changes so the preview
+    // and live HUD reflect the new values without waiting for next capture.
+    if ((next.mode == CaptureMode.manual &&
+            (prev.iso != next.iso ||
+                prev.shutterSpeedDenominator != next.shutterSpeedDenominator)) ||
+        prev.exposureCompensation != next.exposureCompensation) {
       ref.read(cameraControllerProvider.notifier).applyManualSettings(next);
     }
     // Keep the periodic HUD poll running only in AUTO mode.
@@ -771,7 +783,8 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
       // lockForConfiguration calls that could hang the capture flow.
       if (prev?.mode != next.mode ||
           prev?.iso != next.iso ||
-          prev?.shutterSpeedDenominator != next.shutterSpeedDenominator) {
+          prev?.shutterSpeedDenominator != next.shutterSpeedDenominator ||
+          prev?.exposureCompensation != next.exposureCompensation) {
         ref.read(cameraControllerProvider.notifier).applyManualSettings(next);
       }
       if (prev?.quality != next.quality) {
@@ -1507,6 +1520,31 @@ class _TopHud extends StatelessWidget {
                   ],
                 ),
               ),
+              // EV compensation
+              _HudTap(
+                active: activePanel == _TopPanel.ev,
+                onTap: () => onPanelTap(_TopPanel.ev),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('EV',
+                        style: TextStyle(
+                            color: LeicaColors.textDisabled,
+                            fontSize: 7,
+                            letterSpacing: 1.5)),
+                    const SizedBox(height: 2),
+                    Text(
+                      _formatEv(settings.exposureCompensation),
+                      style: TextStyle(
+                          color: settings.exposureCompensation != 0.0
+                              ? LeicaColors.red
+                              : LeicaColors.textPrimary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ],
@@ -1646,6 +1684,10 @@ class _DisplayBar extends StatelessWidget {
             onMirrorToggle: onMirrorToggle,
           ),
         _TopPanel.timer => _TimerPanel(
+            settings: settings,
+            onSettingsChanged: onSettingsChanged,
+          ),
+        _TopPanel.ev => _EvPanel(
             settings: settings,
             onSettingsChanged: onSettingsChanged,
           ),
@@ -1836,6 +1878,31 @@ class _IsoPanel extends StatelessWidget {
         onChanged: (i) =>
             onSettingsChanged((s) => s.copyWith(iso: _isoValues[i])),
         label: 'ISO',
+      ),
+    );
+  }
+}
+
+// ── EV panel ──────────────────────────────────────────────────────────────────
+class _EvPanel extends StatelessWidget {
+  const _EvPanel({required this.settings, required this.onSettingsChanged});
+  final CaptureSettings settings;
+  final void Function(CaptureSettings Function(CaptureSettings)) onSettingsChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedIndex = _evValues
+        .indexWhere(
+            (v) => (v - settings.exposureCompensation).abs() < 0.15)
+        .clamp(0, _evValues.length - 1);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: ExposureWheel(
+        values: _evValues.map(_formatEv).toList(),
+        selectedIndex: selectedIndex,
+        onChanged: (i) => onSettingsChanged(
+            (s) => s.copyWith(exposureCompensation: _evValues[i])),
+        label: 'EV',
       ),
     );
   }
@@ -2048,8 +2115,13 @@ class _BottomBar extends StatelessWidget {
           // AUTO / PRO mode chips
           _ModePair(
             settings: settings,
-            onModeChanged: (mode) =>
-                onSettingsChanged((s) => s.copyWith(mode: mode)),
+            onModeChanged: (mode) => onSettingsChanged((s) => s.copyWith(
+                  mode: mode,
+                  whiteBalanceKelvin:
+                      mode == CaptureMode.auto ? 5500 : s.whiteBalanceKelvin,
+                  exposureCompensation:
+                      mode == CaptureMode.auto ? 0.0 : s.exposureCompensation,
+                )),
           ),
 
           // Shutter
@@ -2264,6 +2336,12 @@ class _LandscapeLeftRail extends StatelessWidget {
             active: activePanel == _TopPanel.iso,
             onTap: () => onPanelTap(_TopPanel.iso),
           ),
+          _LandscapeHudBtn(
+            label: 'EV',
+            value: _formatEv(settings.exposureCompensation),
+            active: activePanel == _TopPanel.ev,
+            onTap: () => onPanelTap(_TopPanel.ev),
+          ),
         ],
       ),
     );
@@ -2355,8 +2433,13 @@ class _LandscapeRightRail extends StatelessWidget {
           _ThumbnailPreview(path: lastCapturePath, onTap: onOpenGallery),
           _ModePair(
             settings: settings,
-            onModeChanged: (mode) =>
-                onSettingsChanged((s) => s.copyWith(mode: mode)),
+            onModeChanged: (mode) => onSettingsChanged((s) => s.copyWith(
+                  mode: mode,
+                  whiteBalanceKelvin:
+                      mode == CaptureMode.auto ? 5500 : s.whiteBalanceKelvin,
+                  exposureCompensation:
+                      mode == CaptureMode.auto ? 0.0 : s.exposureCompensation,
+                )),
           ),
           ShutterButton(onPressed: onCapture, isCapturing: isCapturing),
           _BottomIconBtn(icon: Icons.flip_camera_ios, onTap: onSwitchCamera),
