@@ -6,11 +6,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'native_bridge.dart';
 import 'lut_cache.dart';
 import '../features/camera/models/capture_settings.dart';
+import '../features/color_science/lut_engine.dart';
 import '../features/lens_simulation/lens_profile.dart';
 
 // Top-level so compute() can reference it. Creates a fresh, disposable
 // NativeProcessor inside the background isolate — no Pointers cross isolate
 // boundaries, each isolate allocates its own native buffers.
+// lutData is the LUT pre-loaded on the main isolate; background isolates cannot
+// call rootBundle so the data must be passed in as a plain Float32List.
 Future<Uint8List> _runPipelineIsolate(Map<String, dynamic> args) async {
   final proc = NativeProcessor._();
   try {
@@ -20,6 +23,7 @@ Future<Uint8List> _runPipelineIsolate(Map<String, dynamic> args) async {
       height: args['height'] as int,
       settings: args['settings'] as CaptureSettings,
       segmentationMask: args['mask'] as Float32List?,
+      lutData: args['lutData'] as Float32List?,
     );
   } finally {
     proc.dispose();
@@ -84,12 +88,16 @@ class NativeProcessor {
 
   /// Runs the full native pipeline on [rgba] RGBA bytes and returns the
   /// processed result. Falls back gracefully if native is unavailable.
+  /// [lutData] is the pre-serialised LUT Float32List when running inside a
+  /// background isolate (where rootBundle is unavailable). When null, the
+  /// LUT is loaded from LutCache as normal (main-isolate path).
   Future<Uint8List> process({
     required Uint8List rgba,
     required int width,
     required int height,
     required CaptureSettings settings,
     Float32List? segmentationMask,
+    Float32List? lutData,
   }) async {
     if (!isAvailable) return rgba;
 
@@ -104,9 +112,20 @@ class NativeProcessor {
 
     // 1. Colour look (3D LUT) — Leica Look only ─────────────────────────────
     if (settings.leicaLookEnabled) {
-      final lutPtr = await _luts.get(settings.selectedLook);
+      Pointer<Float>? lutPtr;
+      bool tempAlloc = false;
+      if (lutData != null) {
+        // Background isolate: rootBundle unavailable, use pre-loaded Float32List.
+        final ptr = calloc<Float>(lutData.length);
+        ptr.asTypedList(lutData.length).setAll(0, lutData);
+        lutPtr = ptr;
+        tempAlloc = true;
+      } else {
+        lutPtr = await _luts.get(settings.selectedLook);
+      }
       if (lutPtr != null) {
         _b.apply3dLut(_src, pixels, lutPtr, 33);
+        if (tempAlloc) calloc.free(lutPtr);
       }
     }
 
@@ -195,19 +214,28 @@ class NativeProcessor {
   /// Run the full pipeline in a background isolate so the heavy bokeh blur
   /// (radius=55 on 6MP = ~1.5B ops) doesn't freeze the UI thread.
   /// CaptureSettings contains only Dart primitives and enums — safely sendable.
+  /// The LUT is pre-loaded here (on the main isolate where rootBundle works)
+  /// and passed as a plain Float32List so the background isolate never needs
+  /// to call rootBundle.loadString(), which hangs in a compute() isolate.
   static Future<Uint8List> runInIsolate({
     required Uint8List rgba,
     required int width,
     required int height,
     required CaptureSettings settings,
     Float32List? segmentationMask,
-  }) {
+  }) async {
+    Float32List? lutData;
+    if (settings.leicaLookEnabled) {
+      await LutEngine.instance.preloadLook(settings.selectedLook);
+      lutData = LutEngine.instance.nativeData(settings.selectedLook);
+    }
     return compute(_runPipelineIsolate, {
       'rgba': rgba,
       'width': width,
       'height': height,
       'settings': settings,
       'mask': segmentationMask,
+      'lutData': lutData,
     });
   }
 

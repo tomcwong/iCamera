@@ -452,39 +452,40 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     XFile? xfile;
     Float32List? appleMatte;
     int? appleMatteW, appleMatteH;
-
-    if (settings.mode == CaptureMode.manual && Platform.isIOS) {
-      // PRO mode on iOS: apply manual exposure then use our native capture path
-      // which sets isAutoVirtualDeviceFusionEnabled=false + photoQualityPrioritization=.speed
-      // so iOS cannot override ISO/SS with Smart HDR or Deep Fusion.
-      await ref
-          .read(cameraControllerProvider.notifier)
-          .applyManualSettings(settings);
-      final result = await ManualCameraService.instance.captureProPhoto();
-      if (result != null) {
-        final dir = await getTemporaryDirectory();
-        final path =
-            '${dir.path}/icamera_pro_${DateTime.now().millisecondsSinceEpoch}.jpg';
-        await File(path).writeAsBytes(result.jpeg);
-        xfile = XFile(path);
-        // Apple Portrait Matte — if present, skip the slower Vision segmentation
-        appleMatte = result.mask;
-        appleMatteW = result.maskWidth;
-        appleMatteH = result.maskHeight;
-      }
-    }
-
-    if (xfile == null) {
-      // AUTO mode, non-iOS PRO, or fallback when native capture fails.
-      if (settings.mode == CaptureMode.manual) {
+    try {
+      if (settings.mode == CaptureMode.manual && Platform.isIOS) {
+        // PRO mode on iOS: apply manual exposure then use our native capture path
+        // which sets isAutoVirtualDeviceFusionEnabled=false + photoQualityPrioritization=.speed
+        // so iOS cannot override ISO/SS with Smart HDR or Deep Fusion.
         await ref
             .read(cameraControllerProvider.notifier)
             .applyManualSettings(settings);
+        final result = await ManualCameraService.instance.captureProPhoto();
+        if (result != null) {
+          final dir = await getTemporaryDirectory();
+          final path =
+              '${dir.path}/icamera_pro_${DateTime.now().millisecondsSinceEpoch}.jpg';
+          await File(path).writeAsBytes(result.jpeg);
+          xfile = XFile(path);
+          // Apple Portrait Matte — if present, skip the slower Vision segmentation
+          appleMatte = result.mask;
+          appleMatteW = result.maskWidth;
+          appleMatteH = result.maskHeight;
+        }
       }
-      xfile = await ref.read(cameraControllerProvider.notifier).capture();
-    }
 
-    setState(() => _isCapturing = false);
+      if (xfile == null) {
+        // AUTO mode, non-iOS PRO, or fallback when native capture fails.
+        if (settings.mode == CaptureMode.manual) {
+          await ref
+              .read(cameraControllerProvider.notifier)
+              .applyManualSettings(settings);
+        }
+        xfile = await ref.read(cameraControllerProvider.notifier).capture();
+      }
+    } finally {
+      if (mounted) setState(() => _isCapturing = false);
+    }
     if (xfile == null) return;
     final rotAngle = _captureRotationDegrees();
     _processAndSave(xfile, settings, rotAngle,

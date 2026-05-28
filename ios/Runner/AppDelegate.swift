@@ -330,24 +330,28 @@ import Vision
   }
 
   private func encodeRgbaToHeif(rgbaData: Data, width: Int, height: Int, quality: Double, result: @escaping FlutterResult) {
-    let bytesPerRow = width * 4
-    let colorSpace = CGColorSpaceCreateDeviceRGB()
-    let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
-    guard let provider = CGDataProvider(data: rgbaData as CFData),
-          let cgImage = CGImage(
-            width: width, height: height,
-            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
-            space: colorSpace, bitmapInfo: bitmapInfo,
-            provider: provider, decode: nil,
-            shouldInterpolate: false, intent: .defaultIntent)
-    else { result(nil); return }
-    let data = NSMutableData()
-    guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, "public.heic" as CFString, 1, nil)
-    else { result(nil); return }
-    let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
-    CGImageDestinationAddImage(dest, cgImage, options as CFDictionary)
-    guard CGImageDestinationFinalize(dest) else { result(nil); return }
-    result(FlutterStandardTypedData(bytes: data as Data))
+    // Run H.265 encoding on a background queue — CGImageDestinationFinalize for HEIC
+    // can take 2–5 s on 6 MP images and would freeze the UI if run on the main thread.
+    DispatchQueue.global(qos: .userInitiated).async {
+      let bytesPerRow = width * 4
+      let colorSpace = CGColorSpaceCreateDeviceRGB()
+      let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+      guard let provider = CGDataProvider(data: rgbaData as CFData),
+            let cgImage = CGImage(
+              width: width, height: height,
+              bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow,
+              space: colorSpace, bitmapInfo: bitmapInfo,
+              provider: provider, decode: nil,
+              shouldInterpolate: false, intent: .defaultIntent)
+      else { DispatchQueue.main.async { result(nil) }; return }
+      let data = NSMutableData()
+      guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, "public.heic" as CFString, 1, nil)
+      else { DispatchQueue.main.async { result(nil) }; return }
+      let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
+      CGImageDestinationAddImage(dest, cgImage, options as CFDictionary)
+      guard CGImageDestinationFinalize(dest) else { DispatchQueue.main.async { result(nil) }; return }
+      DispatchQueue.main.async { result(FlutterStandardTypedData(bytes: data as Data)) }
+    }
   }
 
   // Runs VNGeneratePersonSegmentationRequest on the JPEG at [path] and returns
