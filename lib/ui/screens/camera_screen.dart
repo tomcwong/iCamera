@@ -38,7 +38,7 @@ const _shutterValues = [
   8000, 4000, 2000, 1000, 500, 250, 125, 60, 30, 15, 8, 4, 2, 1
 ];
 const _apertureValues = [
-  1.0, 1.2, 1.4, 1.8, 2.0, 2.4, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0
+  1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.4, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0
 ];
 
 // Which panel is currently shown in the display bar.

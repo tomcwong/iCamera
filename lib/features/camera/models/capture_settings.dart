@@ -15,7 +15,7 @@ class CaptureSettings {
     this.iso = 100,
     this.shutterSpeedDenominator = 60,
     this.whiteBalanceKelvin = 5500,
-    this.aperture = 1.4,
+    this.aperture = 8.0,
     this.selectedLook = LeicaLook.contemporary,
     this.selectedLens = LensProfile.summilux28,
     this.flashMode = FlashMode.off,
