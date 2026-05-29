@@ -37,7 +37,15 @@ jobs:
           echo 'CODE_SIGN_IDENTITY = ' >> ios/Flutter/Release.xcconfig
 
       - name: Build iOS release (no code signing)
-        run: flutter build ios --release --no-codesign --verbose
+        run: flutter build ios --release --no-codesign --verbose 2>&1 | tee /tmp/build.log; exit ${PIPESTATUS[0]}
+
+      - name: Show Xcode errors on failure
+        if: failure()
+        run: |
+          echo "=== error: lines ==="
+          grep -n " error:" /tmp/build.log | grep -v "^\[" | tail -40 || echo "(none)"
+          echo "=== BUILD FAILED lines ==="
+          grep -n "BUILD FAILED\|FAILED\|signing\|team" /tmp/build.log | grep -v "^\[" | tail -20 || echo "(none)"
 
       - name: List frameworks in built app
         run: |
