@@ -42,11 +42,12 @@ jobs:
       - name: Show Xcode errors on failure
         if: failure()
         run: |
-          FAIL_LINE=$(grep -n "\*\* BUILD FAILED \*\*" /tmp/build.log | head -1 | cut -d: -f1)
-          echo "BUILD FAILED at line $FAIL_LINE"
-          START=$((FAIL_LINE - 40))
-          echo "=== Lines $START to $FAIL_LINE ==="
-          sed -n "${START},${FAIL_LINE}p" /tmp/build.log
+          FAIL_LINE=$(grep -n "Failed to package\|PhaseScriptExecution failed\|error:" /tmp/build.log | head -1 | cut -d: -f1)
+          echo "First failure at line $FAIL_LINE"
+          START=$((FAIL_LINE - 60))
+          END=$((FAIL_LINE + 10))
+          echo "=== Lines $START to $END ==="
+          sed -n "${START},${END}p" /tmp/build.log
 
       - name: List frameworks in built app
         run: |
