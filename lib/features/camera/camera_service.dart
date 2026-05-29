@@ -60,6 +60,12 @@ class CameraControllerNotifier extends StateNotifier<AsyncValue<CameraController
     await controller.initialize();
     await controller.setExposureMode(ExposureMode.auto);
     await controller.setFocusMode(FocusMode.auto);
+    // Default metering and focus anchor to screen center so EV offsets are
+    // applied from a predictable reference rather than hardware auto-metering.
+    try {
+      await controller.setFocusPoint(const Offset(0.5, 0.5));
+      await controller.setExposurePoint(const Offset(0.5, 0.5));
+    } catch (_) {}
     state = AsyncValue.data(controller);
 
     // Attach Camera2 interop so manual ISO/shutter can be applied later.
