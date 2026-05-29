@@ -1521,9 +1521,8 @@ class _TopHud extends StatelessWidget {
                   ],
                 ),
               ),
-              // EV — AUTO only (PRO uses ISO/SS directly)
-              if (isAuto)
-                _HudTap(
+              // EV — both AUTO and PRO
+              _HudTap(
                   active: activePanel == _TopPanel.ev,
                   onTap: () => onPanelTap(_TopPanel.ev),
                   child: Column(
@@ -2340,9 +2339,8 @@ class _LandscapeLeftRail extends StatelessWidget {
             active: activePanel == _TopPanel.iso,
             onTap: () => onPanelTap(_TopPanel.iso),
           ),
-          // EV — AUTO only
-          if (isAuto)
-            _LandscapeHudBtn(
+          // EV — both AUTO and PRO
+          _LandscapeHudBtn(
               label: 'EV',
               value: _formatEv(settings.exposureCompensation),
               active: activePanel == _TopPanel.ev,
