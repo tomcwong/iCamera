@@ -29,6 +29,12 @@ jobs:
           pod install --repo-update
           echo "=== Podfile.lock ===" && cat Podfile.lock
 
+      - name: Disable code signing for CI
+        run: |
+          echo 'CODE_SIGNING_ALLOWED = NO' >> ios/Flutter/Release.xcconfig
+          echo 'CODE_SIGNING_REQUIRED = NO' >> ios/Flutter/Release.xcconfig
+          echo 'CODE_SIGN_IDENTITY = ' >> ios/Flutter/Release.xcconfig
+
       - name: Build iOS release (no code signing)
         run: flutter build ios --release --no-codesign
 
