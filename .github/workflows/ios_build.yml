@@ -31,6 +31,7 @@ jobs:
 
       - name: Disable code signing for CI
         run: |
+          sed -i '' 's/CODE_SIGN_STYLE = Automatic/CODE_SIGN_STYLE = Manual/g' ios/Runner.xcodeproj/project.pbxproj
           echo 'CODE_SIGNING_ALLOWED = NO' >> ios/Flutter/Release.xcconfig
           echo 'CODE_SIGNING_REQUIRED = NO' >> ios/Flutter/Release.xcconfig
           echo 'CODE_SIGN_IDENTITY = ' >> ios/Flutter/Release.xcconfig
